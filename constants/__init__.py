@@ -1,6 +1,5 @@
 from pathlib import Path
 from dataclasses import dataclass
-from transformers import PreTrainedModel, LlamaForCausalLM, GemmaForCausalLM
 from typing import Type, Optional, Any, List, Tuple
 import math
 
@@ -9,8 +8,6 @@ import math
 class CompetitionParameters:
     """Class defining model parameters"""
 
-    # Any additional arguments to from_pretrained
-    kwargs: Any
     # Reward percentage
     reward_percentage: float
     # Competition id
@@ -25,7 +22,7 @@ class CompetitionParameters:
 WANDB_PROJECT = "myshell-tts-subnet"
 # The uid for this subnet.
 # TODO
-SUBNET_UID = 16
+SUBNET_UID = 1
 # The start block of this subnet
 # TODO
 SUBNET_START_BLOCK = 2225782

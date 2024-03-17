@@ -38,6 +38,9 @@ See [Miner README](./docs/miner.md) for more details.
 ### Validators
 See [Validator README](./docs/validator.md) for more details.
 
+## Acknowledgement
+Our codebase is built upon [Nous Research's Subnet](https://github.com/NousResearch/finetuning-subnet).
+
 ## License
 This repository is licensed under the MIT License.
 ```text

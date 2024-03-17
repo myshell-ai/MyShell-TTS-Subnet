@@ -32,7 +32,7 @@ class HuggingFaceModelStore(RemoteModelStore):
             exist_ok=True,
         )
         commit_info = api.upload_file(
-            model.ckpt,
+            path_or_fileobj=model.ckpt,
             path_in_repo="checkpoint.pth",
             repo_id=model.id.namespace + "/" + model.id.name,
         )
@@ -77,7 +77,9 @@ class HuggingFaceModelStore(RemoteModelStore):
             )
 
         api.hf_hub_download(
-            repo_id=repo_id, revision=model_id.commit, cache_dir=local_path
+            repo_id=repo_id, revision=model_id.commit, 
+            filename="checkpoint.pth",
+            cache_dir=local_path
         )
 
         # Get the directory the model was stored to.
