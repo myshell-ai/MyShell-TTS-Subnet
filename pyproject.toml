@@ -13,6 +13,7 @@ openai-whisper = "^20231117"
 bittensor = "^6.9.3"
 melotts = {path = "MeloTTS"}
 wandb = "^0.16.4"
+safetensors = "^0.4.2"
 
 
 [build-system]

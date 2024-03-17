@@ -91,7 +91,7 @@ def rate(ckpt_path):
 
     model = TTS(language="EN", device="auto", ckpt_path=ckpt_path)
     speaker_ids = model.hps.data.spk2id
-    spkr = speaker_ids["EN-Default"]
+    spkr = speaker_ids["EN-US"]
 
     for i, text in enumerate(texts):
         save_path = f"tmp/sent_{i:03d}.wav"
@@ -106,7 +106,7 @@ def rate(ckpt_path):
     tone_color_sim = compute_tone_color_similarity(audio_paths, vec_gt)
     word_error_rate = compute_wer(texts, audio_paths)
 
-    return (tone_color_sim, word_error_rate)
+    return (1 - tone_color_sim, word_error_rate)
 
 
 if __name__ == "__main__":

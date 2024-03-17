@@ -8,6 +8,7 @@ from constants import CompetitionParameters, MAX_HUGGING_FACE_BYTES
 
 from model.storage.remote_model_store import RemoteModelStore
 import constants
+from huggingface_hub import HfApi
 
 
 class HuggingFaceModelStore(RemoteModelStore):
@@ -25,21 +26,16 @@ class HuggingFaceModelStore(RemoteModelStore):
     ) -> ModelId:
         """Uploads a trained model to Hugging Face."""
         token = HuggingFaceModelStore.assert_access_token_exists()
-
-        # PreTrainedModel.save_pretrained only saves locally
-        model.tokenizer.push_to_hub(
+        api = HfApi(token=token)
+        api.create_repo(
             repo_id=model.id.namespace + "/" + model.id.name,
-            token=token,
-            # private=True,
+            exist_ok=True,
         )
-
-        commit_info = model.pt_model.push_to_hub(
+        commit_info = api.upload_file(
+            model.ckpt,
+            path_in_repo="checkpoint.pth",
             repo_id=model.id.namespace + "/" + model.id.name,
-            token=token,
-            safe_serialization=True,
-            # private=True,
         )
-
         model_id_with_commit = ModelId(
             namespace=model.id.namespace,
             name=model.id.name,
@@ -80,20 +76,8 @@ class HuggingFaceModelStore(RemoteModelStore):
                 f"Hugging Face repo over maximum size limit. Size {size}. Limit {MAX_HUGGING_FACE_BYTES}."
             )
 
-        # Transformers library can pick up a model based on the hugging face path (username/model) + rev.
-
-        model = model_parameters.architecture.from_pretrained(
-            pretrained_model_name_or_path=repo_id,
-            revision=model_id.commit,
-            cache_dir=local_path,
-            use_safetensors=True,
-            **model_parameters.kwargs,
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            pretrained_model_name_or_path=repo_id,
-            revision=model_id.commit,
-            cache_dir=local_path,
+        api.hf_hub_download(
+            repo_id=repo_id, revision=model_id.commit, cache_dir=local_path
         )
 
         # Get the directory the model was stored to.
@@ -112,4 +96,4 @@ class HuggingFaceModelStore(RemoteModelStore):
             competition_id=model_id.competition_id,
         )
 
-        return Model(id=model_id_with_hash, pt_model=model, tokenizer=tokenizer)
+        return Model(id=model_id_with_hash, ckpt=model_dir)
