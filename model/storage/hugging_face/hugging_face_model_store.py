@@ -30,6 +30,7 @@ class HuggingFaceModelStore(RemoteModelStore):
         api.create_repo(
             repo_id=model.id.namespace + "/" + model.id.name,
             exist_ok=True,
+            private=True,
         )
         commit_info = api.upload_file(
             path_or_fileobj=model.ckpt,

@@ -33,6 +33,21 @@ At the core of our subnet is the evaluation protocol. Unlike other modalities, T
 ![evaluation](docs/eval_protocol.png)
 
 ## Getting Started
+### Prerequisites
+Please install this package first. We recommend using a virtual environment or conda environment.
+```bash
+git clone https://github.com/myshell-ai/MyShell-TTS-Subnet
+cd MyShell-TTS-Subnet
+pip install -e .
+# The following command is required by the MeloTTS model
+python -m unidic download
+```
+Please also install `ffmpeg` for audio processing.
+```bash
+# Ubuntu
+sudo apt-get install ffmpeg
+```
+
 ### Miners
 See [Miner README](./docs/miner.md) for more details.
 ### Validators

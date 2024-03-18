@@ -1,6 +1,6 @@
-from models import ReferenceEncoder
+from tts_rater.models import ReferenceEncoder
 import torch
-from mel_processing import spectrogram_torch
+from tts_rater.mel_processing import spectrogram_torch
 import librosa
 import os
 from easydict import EasyDict as edict

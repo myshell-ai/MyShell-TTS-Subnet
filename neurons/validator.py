@@ -35,7 +35,6 @@ from model.data import ModelMetadata
 from model.model_tracker import ModelTracker
 from model.model_updater import ModelUpdater
 from model.storage.chain.chain_model_metadata_store import ChainModelMetadataStore
-from model.storage.disk.utils import get_local_miners_dir
 from model.storage.disk.disk_model_store import DiskModelStore
 from model.storage.hugging_face.hugging_face_model_store import HuggingFaceModelStore
 import traceback
@@ -48,7 +47,6 @@ import bittensor as bt
 from utilities.miner_iterator import MinerIterator
 from utilities import utils
 from utilities.perf_monitor import PerfMonitor
-from transformers import AutoTokenizer, GenerationConfig
 import tts_subnet
 from tts_rater.rater import rate
 
@@ -132,7 +130,6 @@ def nearest_tempo(start_block, tempo, block):
 
 
 class Validator:
-
     @staticmethod
     def config():
         parser = argparse.ArgumentParser()
@@ -736,9 +733,10 @@ class Validator:
             bt.logging.trace(
                 f"Computed model losses for uid: {uid_i} with average loss: {average_model_loss}"
             )
+            bt.logging.debug(f"Computed model losses for uid: {uid_i}: {losses}")
 
         # Compute wins and win rates per uid.
-        wins, win_rate = fc.validation.compute_wins(uids, losses_per_uid, uid_to_block)
+        wins, win_rate = compute_wins(uids, losses_per_uid, uid_to_block)
 
         # Compute softmaxed weights based on win rate.
         model_weights = torch.tensor(
@@ -775,7 +773,6 @@ class Validator:
         )
 
         # Log the performance of the eval loop.
-        bt.logging.debug(pull_data_perf.summary_str())
         bt.logging.debug(load_model_perf.summary_str())
         bt.logging.debug(compute_loss_perf.summary_str())
 
@@ -784,14 +781,12 @@ class Validator:
             competition_parameters.competition_id,
             uids,
             uid_to_block,
-            cortex_data.selected_runs,
             wins,
             win_rate,
             losses_per_uid,
             sample_per_uid,
             load_model_perf.summary_str(),
             compute_loss_perf.summary_str(),
-            pull_data_perf.summary_str(),
         )
 
         # Increment the number of completed run steps by 1
@@ -802,20 +797,17 @@ class Validator:
         competition_id,
         uids,
         uid_to_block,
-        pages,
         wins,
         win_rate,
         losses_per_uid,
         sample_per_uid,
         load_model_perf_str,
         compute_loss_perf_str,
-        pull_data_perf_str,
     ):
         # Build step log
         step_log = {
             "timestamp": time.time(),
             "competition_id": competition_id,
-            "pages": pages,
             "uids": uids,
             "uid_data": {},
         }
@@ -825,19 +817,6 @@ class Validator:
                 "block": uid_to_block[uid],
                 "average_loss": (
                     sum(losses_per_uid[uid]) / len(losses_per_uid[uid])
-                    if len(losses_per_uid[uid]) > 0
-                    else math.inf
-                ),
-                "perplexity": (
-                    float(
-                        torch.exp(
-                            torch.stack(
-                                [torch.Tensor([x]) for x in losses_per_uid[uid]]
-                            ).mean()
-                        )
-                        .float()
-                        .cpu()
-                    )
                     if len(losses_per_uid[uid]) > 0
                     else math.inf
                 ),
@@ -857,7 +836,6 @@ class Validator:
         table = Table(title="Step")
         table.add_column("uid", justify="right", style="cyan", no_wrap=True)
         table.add_column("average_loss", style="magenta")
-        table.add_column("perplexity", style="magenta")
         table.add_column("win_rate", style="magenta")
         table.add_column("win_total", style="magenta")
         table.add_column("weights", style="magenta")
@@ -867,7 +845,6 @@ class Validator:
                 table.add_row(
                     str(uid),
                     str(round(step_log["uid_data"][str(uid)]["average_loss"], 4)),
-                    str(round(step_log["uid_data"][str(uid)]["perplexity"], 4)),
                     str(round(step_log["uid_data"][str(uid)]["win_rate"], 4)),
                     str(step_log["uid_data"][str(uid)]["win_total"]),
                     str(round(self.weights[uid].item(), 4)),
@@ -916,9 +893,6 @@ class Validator:
                 "uid_data": {
                     str(uid): uid_data[str(uid)]["average_loss"] for uid in uids
                 },
-                "perplexity_data": {
-                    str(uid): uid_data[str(uid)]["perplexity"] for uid in uids
-                },
                 "win_rate_data": {
                     str(uid): uid_data[str(uid)]["win_rate"] for uid in uids
                 },
@@ -937,7 +911,6 @@ class Validator:
                 "weight_data": {str(uid): self.weights[uid].item() for uid in uids},
                 "load_model_perf_log": load_model_perf_str,
                 "compute_model_perf_log": compute_loss_perf_str,
-                "pull_data_perf_log": pull_data_perf_str,
             }
             bt.logging.trace("Logging to Wandb")
             self.wandb_run.log(

@@ -29,7 +29,7 @@ SUBNET_START_BLOCK = 2225782
 # The root directory of this project.
 ROOT_DIR = Path(__file__).parent.parent
 # The maximum bytes for the hugging face repo
-MAX_HUGGING_FACE_BYTES: int = 15 * 1024 * 1024 * 1024
+MAX_HUGGING_FACE_BYTES: int = 512 * 1024 * 1024
 # Schedule of model architectures
 COMPETITION_SCHEDULE: List[CompetitionParameters] = [
     CompetitionParameters(

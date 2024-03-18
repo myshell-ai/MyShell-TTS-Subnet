@@ -23,24 +23,7 @@ class DiskModelStore(LocalModelStore):
 
     def store_model(self, hotkey: str, model: Model) -> ModelId:
         """Stores a trained model locally."""
-
-        save_directory = utils.get_local_model_snapshot_dir(
-            self.base_dir, hotkey, model.id
-        )
-
-        # Note that the revision argument here does not affect the directory path like with hugging face downloads.
-
-        model.pt_model.save_pretrained(
-            save_directory=save_directory,
-            revision=model.id.commit,
-            safe_serialization=True,
-        )
-
-        model.tokenizer.save_pretrained(
-            save_directory=save_directory, revision=model.id.commit
-        )
-
-        # Return the same model id used as we do not edit the commit information.
+        # Unimplemented for now.
         return model.id
 
     def retrieve_model(

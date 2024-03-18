@@ -17,7 +17,7 @@ class ModelUpdater:
         metadata_store: ModelMetadataStore,
         remote_store: RemoteModelStore,
         local_store: LocalModelStore,
-        model_tracker: ModelTracker
+        model_tracker: ModelTracker,
     ):
         self.metadata_store = metadata_store
         self.remote_store = remote_store
@@ -34,22 +34,6 @@ class ModelUpdater:
             if x.competition_id == id:
                 return x
         return None
-    
-    def verify_model_satisfies_parameters(model: Model) -> bool:
-        parameters = ModelUpdater.get_competition_parameters(model.id.competition_id)
-        if not parameters:
-            bt.logging.trace(
-                f"No competition parameters found for {model.id.competition_id}"
-            )
-            return False
-        
-        # Check that the parameter count of the model is within allowed bounds.
-        parameter_size = sum(p.numel() for p in model.pt_model.parameters())
-        if parameters.max_model_parameter_size is not None and parameter_size > parameters.max_model_parameter_size:
-            return False
-        
-        return True
-
 
     async def _get_metadata(self, hotkey: str) -> Optional[ModelMetadata]:
         """Get metadata about a model by hotkey"""
@@ -71,7 +55,7 @@ class ModelUpdater:
                 f"Skipping model for {hotkey} since it was submitted at block {metadata.block} which is less than the minimum block {self.min_block}"
             )
             return False
-        
+
         # Backwards compatability for models submitted before competition id added
         if metadata.id.competition_id is None:
             metadata.id.competition_id = constants.ORIGINAL_COMPETITION_ID
@@ -101,11 +85,6 @@ class ModelUpdater:
             raise ValueError(
                 f"Sync for hotkey {hotkey} failed. Hash of content downloaded from hugging face does not match chain metadata. {metadata}"
             )
-
-        if not ModelUpdater.verify_model_satisfies_parameters(model):
-            raise ValueError(
-                    f"Sync for hotkey {hotkey} failed, model does not satisfy parameters for block {metadata.block}"
-                )
 
         # Update the tracker
         self.model_tracker.on_miner_model_updated(hotkey, metadata)
