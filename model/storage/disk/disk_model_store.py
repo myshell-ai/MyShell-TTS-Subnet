@@ -33,7 +33,7 @@ class DiskModelStore(LocalModelStore):
 
         ckpt = os.path.join(
             utils.get_local_model_snapshot_dir(self.base_dir, hotkey, model_id),
-            "checkpoint.pth",
+            "checkpoint.safetensors",
         )
 
         return Model(id=model_id, ckpt=ckpt)

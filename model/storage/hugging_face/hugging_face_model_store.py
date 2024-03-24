@@ -9,6 +9,20 @@ from constants import CompetitionParameters, MAX_HUGGING_FACE_BYTES
 from model.storage.remote_model_store import RemoteModelStore
 import constants
 from huggingface_hub import HfApi
+from safetensors.torch import load_file, save_file
+from collections import defaultdict
+import torch
+
+
+def shared_pointers(tensors):
+    ptrs = defaultdict(list)
+    for k, v in tensors.items():
+        ptrs[v.data_ptr()].append(k)
+    failing = []
+    for ptr, names in ptrs.items():
+        if len(names) > 1:
+            failing.append(names)
+    return failing
 
 
 class HuggingFaceModelStore(RemoteModelStore):
@@ -32,9 +46,25 @@ class HuggingFaceModelStore(RemoteModelStore):
             exist_ok=True,
             private=True,
         )
+        # convert to safetensors if needed
+        if not model.ckpt.endswith(".safetensors"):
+            # save the model as a safetensors file
+            loaded = torch.load(model.ckpt, map_location="cpu")
+            if "model" in loaded:
+                loaded = loaded["model"]
+            shared = shared_pointers(loaded)
+            for shared_weights in shared:
+                for name in shared_weights[1:]:
+                    loaded.pop(name)
+
+            # For tensors to be contiguous
+            loaded = {k: v.contiguous() for k, v in loaded.items()}
+            save_file(loaded, model.ckpt + ".safetensors", metadata={"format": "pt"})
+            model.ckpt = model.ckpt + ".safetensors"
+
         commit_info = api.upload_file(
             path_or_fileobj=model.ckpt,
-            path_in_repo="checkpoint.pth",
+            path_in_repo="checkpoint.safetensors",
             repo_id=model.id.namespace + "/" + model.id.name,
         )
         model_id_with_commit = ModelId(
@@ -67,7 +97,11 @@ class HuggingFaceModelStore(RemoteModelStore):
         repo_id = model_id.namespace + "/" + model_id.name
 
         # Check ModelInfo for the size of model.safetensors file before downloading.
-        api = HfApi()
+        try:
+            token = HuggingFaceModelStore.assert_access_token_exists()
+        except:
+            token = None
+        api = HfApi(token=token)
         model_info = api.model_info(
             repo_id=repo_id, revision=model_id.commit, timeout=10, files_metadata=True
         )
@@ -78,9 +112,10 @@ class HuggingFaceModelStore(RemoteModelStore):
             )
 
         api.hf_hub_download(
-            repo_id=repo_id, revision=model_id.commit, 
-            filename="checkpoint.pth",
-            cache_dir=local_path
+            repo_id=repo_id,
+            revision=model_id.commit,
+            filename="checkpoint.safetensors",
+            cache_dir=local_path,
         )
 
         # Get the directory the model was stored to.

@@ -709,6 +709,9 @@ class Validator:
                             )
 
                         with compute_loss_perf.sample():
+                            bt.logging.info(
+                                f"Computing loss for uid: {uid_i}, ckpt: {model_i.ckpt}"
+                            )
                             losses = rate(model_i.ckpt)
 
                         del model_i
