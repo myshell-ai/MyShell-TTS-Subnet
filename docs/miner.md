@@ -18,3 +18,5 @@ Please make sure you have added your huggingface API key to the `.env` file. For
 ```bash
 HF_ACCESS_TOKEN="hf_YOUR_API_KEY"
 ```
+
+Since MeloTTS is a lightweight model, you can train it on a single consumer-grade GPU.

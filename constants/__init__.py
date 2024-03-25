@@ -21,11 +21,9 @@ class CompetitionParameters:
 # The validator WANDB project.
 WANDB_PROJECT = "myshell-tts-subnet"
 # The uid for this subnet.
-# TODO
-SUBNET_UID = 1
+SUBNET_UID = 3
 # The start block of this subnet
-# TODO
-SUBNET_START_BLOCK = 2225782
+SUBNET_START_BLOCK = 2635801
 # The root directory of this project.
 ROOT_DIR = Path(__file__).parent.parent
 # The maximum bytes for the hugging face repo

@@ -51,9 +51,9 @@ It is important to note that this affects the game theoretics of the incentive l
 
 # System Requirements
 
-Validators will need enough disk space to store the model of every miner in the subnet. Each model (As of Jan 1st, 2024) is limited to 15 GB and 7B parameters, and the validator has cleanup logic to remove old models. It is recommended to have at least 3 TB of disk space.
+Validators will need enough disk space to store the model of every miner in the subnet. Each model is limited to 512 MB, and the validator has cleanup logic to remove old models. It is recommended to have at least 256 GB of disk space.
 
-Validators will need enough processing power to evaluate their model. As of Jan 1st, 2024 it is required to have a GPU with atleast 24 GB of VRAM.
+Validators will need enough processing power to evaluate their model. Thanks to the efficiency of MeloTTS, the validator can be run on a CPU machine. We are working on a GPU version of the validator to speed up the evaluation process.
 
 # Getting Started
 
