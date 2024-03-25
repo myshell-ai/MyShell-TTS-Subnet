@@ -86,7 +86,19 @@ Prerequisites:
 2. Make sure your virtual environment is activated. This is important because the auto-updater will automatically update the package dependencies with pip.
 3. Make sure you're using the main branch: `git checkout main`.
 
+To run the validator with auto-updates, use the following command:
+```bash
+pm2 start neurons/validator.py --name validator --interpreter python -- --wallet.name your_wallet --wallet.hotkey your_hotkey
+```
+
+## Without auto-updates
 You can run validator with:
 ```bash
 python neurons/validator.py --wallet.name your_wallet --wallet.hotkey your_hotkey
+```
+
+# Testing the Validator
+You can test the validator offline by running the following command:
+```bash
+python neurons/validator.py --wallet.name your_wallet --wallet.hotkey your_hotkey --wandb.off --offline
 ```

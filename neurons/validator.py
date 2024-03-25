@@ -183,11 +183,6 @@ class Validator:
             "--netuid", type=str, default=constants.SUBNET_UID, help="The subnet UID."
         )
         parser.add_argument(
-            "--attn_implementation",
-            default="flash_attention_2",
-            help="Implementation of attention to use",
-        )
-        parser.add_argument(
             "--genesis",
             action="store_true",
             help="Don't sync to consensus, rather start evaluation from scratch",
