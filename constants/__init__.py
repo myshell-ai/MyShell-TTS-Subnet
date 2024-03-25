@@ -34,17 +34,13 @@ MAX_HUGGING_FACE_BYTES: int = 512 * 1024 * 1024
 COMPETITION_SCHEDULE: List[CompetitionParameters] = [
     CompetitionParameters(
         reward_percentage=1.0,
-        competition_id="c1",
+        competition_id="p225",
     ),
 ]
-ORIGINAL_COMPETITION_ID = "c1"
+ORIGINAL_COMPETITION_ID = "p225"
 
 
 assert math.isclose(sum(x.reward_percentage for x in COMPETITION_SCHEDULE), 1.0)
-assert all(
-    len(x.competition_id) > 0 and len(x.competition_id) <= 2
-    for x in COMPETITION_SCHEDULE
-)
 
 # ---------------------------------
 # Miner/Validator Model parameters.
@@ -58,13 +54,3 @@ alpha = 0.9
 temperature = 0.08
 # validator score boosting for earlier models.
 timestamp_epsilon = 0.01
-# validator eval sequence length.
-sequence_length = 2048
-
-# ---------------------------------
-# Data generation parameters.
-# ---------------------------------
-
-OPENAI_MODEL = "gpt-3.5-turbo-0125"
-OPENAI_TEMPERATURE = 0.5
-NUM_SHOT = 3

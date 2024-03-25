@@ -683,6 +683,8 @@ class Validator:
 
             uid_to_hotkey_and_model_metadata[uid_i] = (hotkey, model_i_metadata)
 
+        seed = random.randint(0, 2**16)
+
         for uid_i, (
             hotkey,
             model_i_metadata,
@@ -712,7 +714,11 @@ class Validator:
                             bt.logging.info(
                                 f"Computing loss for uid: {uid_i}, ckpt: {model_i.ckpt}"
                             )
-                            losses = rate(model_i.ckpt)
+                            losses = rate(
+                                model_i.ckpt,
+                                competition_parameters.competition_id,
+                                seed,
+                            )
 
                         del model_i
                         torch.cuda.empty_cache()
