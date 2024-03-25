@@ -21,6 +21,11 @@ As building a TTS model is a complex task, we will divide the development into s
 - **Phase 2**: Increase the coverage of speaker and conversation pool. We will recurrently update the speaker and language to cover more scenarios.
 - **Phase 3**: More generally, we can have fast-clone models that can be adapted to new speakers with a small amount of data, e.g., [OpenVoice](https://github.com/myshell-ai/OpenVoice). We will move to fast-clone models in this phase.
 
+## Current Status
+We are currently in Phase 1. To start, we utilize the [VCTK](https://huggingface.co/datasets/vctk) dataset as the source of our speaker data. We randomly select 1 speaker from the dataset and the goal is to build a TTS model that can mimic this speaker's voice.
+
+Please refer to `tts_rater` folder for audio samples from the speaker and the text used for evaluation.
+
 ## Overview
 ![architecture](docs/tts_subnet.png)
 Our subnet operates as follows:
@@ -28,6 +33,7 @@ Our subnet operates as follows:
 1. **Miners**: Train TTS model. Once a model is ready, the miner submits it to a Hugging Face 🤗 model pool, with metadata committed to the Bittensor chain.
 2. **Validators**: Evaluate submitted models. Validators generate test cases and assess model performance, assigning weights based on results.
 3. **Bittensor Blockchain**: Aggregates weights using Yuma Consensus to determine final weights and emissions for each miner.
+
 ### Evaluation Protocol
 At the core of our subnet is the evaluation protocol. Unlike other modalities, TTS models are hard to evaluate with traditional metrics. We, therefore, propose a set of evaluation metrics that are more relevant to TTS models based on our experience:
 ![evaluation](docs/eval_protocol.png)
