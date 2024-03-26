@@ -652,7 +652,7 @@ class Validator:
                 hotkey
             )
 
-            if model_i_metadata != None:
+            if model_i_metadata is not None:
                 for other_uid, (
                     other_hotkey,
                     other_metadata,
@@ -685,9 +685,8 @@ class Validator:
             model_i_metadata,
         ) in uid_to_hotkey_and_model_metadata.items():
             losses: typing.List[float] = []
-            sample: typing.Optional[typing.Tuple[str, str]] = None
 
-            if model_i_metadata != None:
+            if model_i_metadata is not None:
                 if (
                     model_i_metadata.id.competition_id
                     == competition_parameters.competition_id
@@ -729,11 +728,13 @@ class Validator:
                 bt.logging.debug(
                     f"Unable to load the model for {uid_i} (perhaps a duplicate?). Setting loss to inifinity."
                 )
+            if len(losses) == 0:
+                # Currently evaluate on 10 samples to get 10 tone similarity losses and 10 word error rate losses.
+                losses = [math.inf] * 20
 
-            average_model_loss = (
-                sum(losses) / len(losses) if len(losses) > 0 else math.inf
-            )
             losses_per_uid[uid_i] = losses
+            average_model_loss = sum(losses) / len(losses)
+
             bt.logging.trace(
                 f"Computed model losses for uid: {uid_i} with average loss: {average_model_loss}"
             )
