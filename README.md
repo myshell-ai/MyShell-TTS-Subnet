@@ -5,6 +5,7 @@
 </div>
 
 ---
+*News: We are now on the mainnet with uid 3! Please join the [Bittensor Discord](https://discord.gg/RXST8svz) and see us at Channel γ·gamma·3! Also, please check our [X (Twitter)](https://twitter.com/myshell_ai/status/1772792027148894557) for our vision of creating a collaborative environment where everyone can contribute, benefit, and engage with open-source models, ultimately empowering millions.  03/24*
 
 ## Introduction
 
