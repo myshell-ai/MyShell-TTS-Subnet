@@ -33,6 +33,8 @@ where the `config.json` will be generated in the same folder as the `metadata.li
 
 In addition, you can add the `--pretrain_G path_to_your_pretrained_model_pth_file` to load the pretrained model. For example, the official MeloTTS model can be downloaded from the [Huggingface model hub](https://huggingface.co/myshell-ai/MeloTTS-English).
 
+> Warning: As for now, there is an incompatible issue between the pretrained model and the default model configuration. We've fixed it in the newest version. But if you are using an old version of this package, please edit the `config.json` file in the same folder as the `metadata.list` file and change the `n_speakers` in the `data` section from 1 to 256 and add an additional line `"num_languages": 10` in the model section. An example of a good configuration file is provided in the `docs/config.json`. Sorry for the inconvenience.
+
 ### 4. Listen to the generated audio
 After training, you can run the following command to generate audio from the text:
 

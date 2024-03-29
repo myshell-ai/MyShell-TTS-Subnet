@@ -39,6 +39,9 @@ class TTS(nn.Module):
         num_tones = hps.num_tones
         symbols = hps.symbols
 
+        args = dict(hps.model)
+        args.pop("num_languages", None)
+
         model = SynthesizerTrn(
             len(symbols),
             hps.data.filter_length // 2 + 1,
@@ -46,7 +49,7 @@ class TTS(nn.Module):
             n_speakers=hps.data.n_speakers,
             num_tones=num_tones,
             num_languages=num_languages,
-            **hps.model,
+            **args,
         ).to(device)
 
         model.eval()

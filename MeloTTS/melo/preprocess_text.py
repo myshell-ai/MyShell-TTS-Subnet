@@ -122,7 +122,11 @@ def main(
 
     config["data"]["training_files"] = train_path
     config["data"]["validation_files"] = val_path
-    config["data"]["n_speakers"] = len(spk_id_map)
+
+    # Hardcoded for compatibility with the pretrained model
+    config["data"]["n_speakers"] = 256# len(spk_id_map)
+    config["model"]["num_languages"] = 10
+    
     config["num_languages"] = num_languages
     config["num_tones"] = num_tones
     config["symbols"] = symbols
