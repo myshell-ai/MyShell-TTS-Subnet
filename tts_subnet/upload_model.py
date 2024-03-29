@@ -126,14 +126,9 @@ async def main(config: bt.config):
             bt.logging.success("Committed model to the chain.")
             break
         except Exception as e:
-            update_repo_visibility(
-                model_id.namespace + "/" + model_id.name,
-                private=True,
-                token=os.getenv("HF_ACCESS_TOKEN"),
-            )
             bt.logging.error(f"Failed to advertise model on the chain: {e}")
-            bt.logging.error("Retrying in 60 seconds...")
-            time.sleep(60)
+            bt.logging.error("Retrying in 120 seconds...")
+            time.sleep(120)
 
 
 if __name__ == "__main__":
