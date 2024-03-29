@@ -115,4 +115,11 @@ def rate(ckpt_path, speaker="p225", seed=0):
 
 
 if __name__ == "__main__":
-    print(rate("tts_rater/MeloTTS-English/checkpoint.pth"))
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ckpt_path", type=str, required=True)
+
+    args = parser.parse_args()
+
+    print(rate(args.ckpt_path))
