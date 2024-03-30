@@ -11,6 +11,7 @@ import whisper
 from jiwer import wer
 import json
 import random
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
 hps = edict(
     {
@@ -56,9 +57,9 @@ def extract_se(ref_enc, ref_wav_list, se_save_path=None, device="cpu"):
 
 
 ref_enc = ReferenceEncoder(1024 // 2 + 1, 256)
-checkpoint = torch.load("tts_rater/reference_encoder.pth", map_location="cpu")
+checkpoint = torch.load(os.path.join(script_dir, "reference_encoder.pth"), map_location="cpu")
 ref_enc.load_state_dict(checkpoint["model"], strict=True)
-vec_gt_dict = torch.load("tts_rater/vec_gt.pth", map_location="cpu")
+vec_gt_dict = torch.load(os.path.join(script_dir, "vec_gt.pth"), map_location="cpu")
 
 
 def compute_tone_color_similarity(audio_paths, vec_gt):
@@ -84,10 +85,10 @@ def compute_wer(texts, audio_paths):
     return wer_results
 
 
-texts = json.load(open("tts_rater/text_list.json"))
+texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 
 
-def rate(ckpt_path, speaker="p225", seed=0):
+def rate(ckpt_path, speaker="p225", seed=0, samples=10):
     from melo.api import TTS
 
     model = TTS(language="EN", device="auto", ckpt_path=ckpt_path)
@@ -95,7 +96,7 @@ def rate(ckpt_path, speaker="p225", seed=0):
     spkr = speaker_ids["EN-US"]
 
     random.seed(seed)
-    text_test = random.choices(texts, k=10)
+    text_test = random.choices(texts, k=samples)
 
     # remove the directory if it exists
     if os.path.exists("tmp"):
