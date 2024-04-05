@@ -15,6 +15,7 @@ import itertools
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 from tqdm import tqdm
 import onnxruntime as ort
+import tempfile
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -138,7 +139,7 @@ def load_melspecs(fname):
     len_samples = int(INPUT_LENGTH*sr)
     # Repeat or truncate the audio to the desired length
     if len(audio_ref) < len_samples:
-        audio_ref = np.tile(audio_ref, int(np.ceil(len_samples/len(audio_ref))))
+        audio_ref = np.tile(audio_ref, 1+int(np.ceil(len_samples/len(audio_ref))))
     audio_ref = audio_ref[:len_samples]
     mel_spec = librosa.feature.melspectrogram(
         y=audio_ref, sr=16000, n_fft=321, hop_length=160, n_mels=120)
@@ -162,7 +163,7 @@ def compute_dns_mos_loss(audio_paths, batch_size):
 texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 
 
-def rate(ckpt_path, speaker="p225", seed=0, samples=64, batch_size=16, group_size=16):
+def rate(ckpt_path, speaker="p225", seed=0, samples=64, batch_size=16, group_size=16, use_tmpdir=False):
     """
         Compute the following metrics for a given checkpoint:
         - Tone color loss
@@ -179,19 +180,19 @@ def rate(ckpt_path, speaker="p225", seed=0, samples=64, batch_size=16, group_siz
     random.seed(seed)
     text_test = random.choices(texts, k=samples)
 
-    if os.path.exists("tmp"):
-        os.system("rm -r tmp")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        if use_tmpdir:
+            tmpdir = "tmp"
+            os.makedirs(tmpdir, exist_ok=True)
+        for i, text in enumerate(tqdm(text_test)):
+            save_path = os.path.join(tmpdir, f"{i}.wav")
+            model.tts_to_file(text, spkr, save_path, speed=1.0, quiet=True)
 
-    for i, text in enumerate(tqdm(text_test)):
-        save_path = f"tmp/sent_{i:03d}.wav"
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        model.tts_to_file(text, spkr, save_path, speed=1.0, quiet=True)
+        audio_paths = sorted(glob.glob(os.path.join(tmpdir, "*.wav")))
 
-    audio_paths = sorted(glob.glob("tmp/*.wav"))
-
-    tone_color_losses = compute_tone_color_loss(audio_paths, vec_gt_dict[speaker], batch_size)
-    word_error_rate = compute_wer(text_test, audio_paths, batch_size)
-    dns_mos_losses = compute_dns_mos_loss(audio_paths, batch_size)
+        tone_color_losses = compute_tone_color_loss(audio_paths, vec_gt_dict[speaker], batch_size)
+        word_error_rate = compute_wer(text_test, audio_paths, batch_size)
+        dns_mos_losses = compute_dns_mos_loss(audio_paths, batch_size)
 
     losses = tone_color_losses + word_error_rate + dns_mos_losses
 
@@ -208,7 +209,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt_path", type=str, required=True)
-
+    parser.add_argument("--use_tmpdir", action="store_true")
+    parser.add_argument("--speaker", type=str, default="p225")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--samples", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--group_size", type=int, default=16)
     args = parser.parse_args()
 
-    print(rate(args.ckpt_path))
+    print(rate(args.ckpt_path, args.speaker, args.seed, args.samples, args.batch_size, args.group_size, args.use_tmpdir))

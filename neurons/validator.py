@@ -57,6 +57,10 @@ import constants
 import traceback
 import bittensor as bt
 
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 def iswin(loss_i, loss_j, block_i, block_j):
     """
@@ -733,7 +737,7 @@ class Validator:
                 )
             if len(losses) == 0:
                 # 3 metrics, 64 samples, 16 per group
-                losses = [math.inf] * 3 * self.config.num_samples_per_eval // 16
+                losses = [math.inf] * (3 * self.config.num_samples_per_eval // 16)
 
             losses_per_uid[uid_i] = losses
             average_model_loss = sum(losses) / len(losses)
