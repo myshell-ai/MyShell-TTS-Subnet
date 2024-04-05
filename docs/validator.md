@@ -88,7 +88,7 @@ Prerequisites:
 
 To run the validator with auto-updates, use the following command:
 ```bash
-pm2 start neurons/validator.py --name validator --interpreter python -- --wallet.name your_wallet --wallet.hotkey your_hotkey
+pm2 start --name finetune-vali-updater --interpreter python scripts/start_validator.py -- --pm2_name finetune-vali --wallet.name coldkey --wallet.hotkey hotkey [other vali flags]
 ```
 
 ## Without auto-updates
