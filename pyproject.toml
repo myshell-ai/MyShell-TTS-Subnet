@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tts-subnet"
-version = "0.1.0"
+version = "0.2.0"
 description = "MyShell TTS Subnet"
 authors = ["TC <tc@myshell.ai>"]
 readme = "README.md"
