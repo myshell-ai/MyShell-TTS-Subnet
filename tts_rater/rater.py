@@ -123,7 +123,7 @@ def compute_wer(texts, audio_paths, batch_size):
 texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 
 
-def rate(ckpt_path, speaker="p225", seed=0, samples=100, batch_size=16):
+def rate(ckpt_path, speaker="p225", seed=0, samples=64, batch_size=16):
     from melo.api import TTS
 
     model = TTS(language="EN", device="cuda", ckpt_path=ckpt_path)
