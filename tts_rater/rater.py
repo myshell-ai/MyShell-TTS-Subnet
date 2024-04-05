@@ -14,6 +14,8 @@ import math
 import itertools
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 from tqdm import tqdm
+import onnxruntime as ort
+
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 if not torch.cuda.is_available():
@@ -52,6 +54,8 @@ def pad_audio_batch(batch, max_len=0):
     batch = [torch.nn.functional.pad(y, (0, max_len - y.size(0)), value=0) for y in batch]
     return batch
 
+# =================== Tone color loss ===================
+
 def extract_se(ref_enc, waveforms, batch_size, se_save_path=None):
     gs = []
 
@@ -85,17 +89,18 @@ checkpoint = torch.load(os.path.join(script_dir, "reference_encoder.pth"), map_l
 ref_enc.load_state_dict(checkpoint["model"], strict=True)
 vec_gt_dict = torch.load(os.path.join(script_dir, "vec_gt.pth"), map_location="cuda")
 
-def compute_tone_color_similarity(audio_paths, vec_gt, batch_size):
+def compute_tone_color_loss(audio_paths, vec_gt, batch_size):
     waveforms = [load_wav_file(fname, hps.data.sampling_rate) for fname in audio_paths]
     vec_gen = extract_se(ref_enc, waveforms, batch_size)
-    scores = cosine_similarity(vec_gen, vec_gt)
+    sims = cosine_similarity(vec_gen, vec_gt)
     # in order to use the score as the loss, we use 1 - score
-    scores = 1 - scores
-    return scores.cpu().tolist()
+    losses = 1 - sims
+    return losses.cpu().tolist()
 
+# =================== Word error rate ===================
 
-whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-medium")
-whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-medium").cuda()
+whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-small.en")
+whisper_model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-small.en").cuda()
 
 def compute_wer(texts, audio_paths, batch_size):
     waveforms = [load_wav_file(fname, 16000) for fname in audio_paths]
@@ -119,11 +124,52 @@ def compute_wer(texts, audio_paths, batch_size):
             wer_results.append(wer(in_text.strip(), out_text.strip()))
     return wer_results
 
+# =================== DNS-MOS loss ===================
+"""Adapted from https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS"""
 
+INPUT_LENGTH = 9
+
+# Only use p808_onnx_sess for now
+# primary_model = ort.InferenceSession(os.path.join(script_dir, "DNSMOS/sig_bak_ovr.onnx"))
+p808_onnx_sess = ort.InferenceSession(os.path.join(script_dir, "DNSMOS/model_v8.onnx"))
+
+def load_melspecs(fname):
+    audio_ref, sr = librosa.load(fname, sr=16000)
+    len_samples = int(INPUT_LENGTH*sr)
+    # Repeat or truncate the audio to the desired length
+    if len(audio_ref) < len_samples:
+        audio_ref = np.tile(audio_ref, int(np.ceil(len_samples/len(audio_ref))))
+    audio_ref = audio_ref[:len_samples]
+    mel_spec = librosa.feature.melspectrogram(
+        y=audio_ref, sr=16000, n_fft=321, hop_length=160, n_mels=120)
+    # to_db
+    mel_spec = (librosa.power_to_db(mel_spec, ref=np.max) + 40) / 40
+    return mel_spec
+
+def compute_dns_mos_loss(audio_paths, batch_size):
+    mel_specs = [np.array(load_melspecs(f).T).astype("float32") for f in audio_paths]
+    dns_mos_results = []
+    for mel_batch in tqdm(batched(mel_specs, batch_size), total=math.ceil(len(mel_specs)/batch_size)):
+        p808_oi = {"input_1": np.stack(mel_batch)}
+        outputs = p808_onnx_sess.run(None, p808_oi)
+        dns_mos_results.extend(outputs[0].reshape(-1).tolist())
+    # convert to loss
+    return [-x for x in dns_mos_results]
+    
+# =================== Rate function ===================
+
+# TODO: Read texts from Internet or use a larger dataset
 texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 
 
-def rate(ckpt_path, speaker="p225", seed=0, samples=64, batch_size=16):
+def rate(ckpt_path, speaker="p225", seed=0, samples=64, batch_size=16, group_size=16):
+    """
+        Compute the following metrics for a given checkpoint:
+        - Tone color loss
+        - Word error rate
+        And then aggregate the losses by group_size to improve the stability of the results.
+    
+    """
     from melo.api import TTS
 
     model = TTS(language="EN", device="cuda", ckpt_path=ckpt_path)
@@ -143,10 +189,18 @@ def rate(ckpt_path, speaker="p225", seed=0, samples=64, batch_size=16):
 
     audio_paths = sorted(glob.glob("tmp/*.wav"))
 
-    tone_color_sim = compute_tone_color_similarity(audio_paths, vec_gt_dict[speaker], batch_size)
+    tone_color_losses = compute_tone_color_loss(audio_paths, vec_gt_dict[speaker], batch_size)
     word_error_rate = compute_wer(text_test, audio_paths, batch_size)
+    dns_mos_losses = compute_dns_mos_loss(audio_paths, batch_size)
 
-    return tone_color_sim + word_error_rate
+    losses = tone_color_losses + word_error_rate + dns_mos_losses
+
+    # Aggregate the losses by group_size
+    agg_losses = []
+    for i in range(0, len(losses), group_size):
+        agg_losses.append(sum(losses[i:i+group_size])/group_size)
+    
+    return agg_losses
 
 
 if __name__ == "__main__":

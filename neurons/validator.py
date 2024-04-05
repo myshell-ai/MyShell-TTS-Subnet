@@ -712,6 +712,9 @@ class Validator:
                                 model_i.ckpt,
                                 competition_parameters.competition_id,
                                 seed,
+                                samples=self.config.num_samples_per_eval,
+                                batch_size=16,
+                                group_size=16,
                             )
 
                         del model_i
@@ -729,8 +732,8 @@ class Validator:
                     f"Unable to load the model for {uid_i} (perhaps a duplicate?). Setting loss to inifinity."
                 )
             if len(losses) == 0:
-                # Currently evaluate on 10 samples to get 10 tone similarity losses and 10 word error rate losses.
-                losses = [math.inf] * 20
+                # 3 metrics, 64 samples, 16 per group
+                losses = [math.inf] * 3 * self.config.num_samples_per_eval // 16
 
             losses_per_uid[uid_i] = losses
             average_model_loss = sum(losses) / len(losses)
@@ -937,7 +940,7 @@ class Validator:
                     self.global_step += 1
 
                 if not self.config.dont_set_weights and not self.config.offline:
-                    await self.try_set_weights(ttl=60)
+                    await self.try_set_weights(ttl=120)
                 self.last_epoch = self.metagraph.block.item()
                 self.epoch_step += 1
 
