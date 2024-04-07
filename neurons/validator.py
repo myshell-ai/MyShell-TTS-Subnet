@@ -28,6 +28,7 @@ import random
 import asyncio
 import argparse
 import typing
+from threadpoolctl import threadpool_limits
 
 import wandb
 import constants
@@ -165,7 +166,7 @@ class Validator:
         parser.add_argument(
             "--sample_min",
             type=int,
-            default=5,
+            default=15,
             help="Number of uids to eval each step.",
         )
         parser.add_argument(
@@ -594,7 +595,7 @@ class Validator:
     async def run_step(self):
         """
         Executes a step in the evaluation process of models. This function performs several key tasks:
-        1. Identifies valid models for evaluation (top 5 from last run + newly updated models).
+        1. Identifies valid models for evaluation (top sample_min from last run + newly updated models).
         2. Generates random pages for evaluation and prepares batches for each page from the dataset.
         3. Computes the scoring for each model based on the losses incurred on the evaluation batches.
         4. Calculates wins and win rates for each model to determine their performance relative to others.
@@ -712,14 +713,15 @@ class Validator:
                             bt.logging.info(
                                 f"Computing loss for uid: {uid_i}, ckpt: {model_i.ckpt}"
                             )
-                            losses = rate(
-                                model_i.ckpt,
-                                competition_parameters.competition_id,
-                                seed,
-                                samples=self.config.num_samples_per_eval,
-                                batch_size=16,
-                                group_size=16,
-                            )
+                            with threadpool_limits(limits=1, user_api="blas"):
+                                losses = rate(
+                                    model_i.ckpt,
+                                    competition_parameters.competition_id,
+                                    seed,
+                                    samples=self.config.num_samples_per_eval,
+                                    batch_size=16,
+                                    group_size=16,
+                                )
 
                         del model_i
                         torch.cuda.empty_cache()
