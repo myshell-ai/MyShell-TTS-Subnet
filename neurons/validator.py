@@ -665,9 +665,9 @@ class Validator:
                             bt.logging.debug(
                                 f"Perferring duplicate of {uid_i} with {other_uid} since it is newer"
                             )
-                            model_i_metadata = None
                             # Release own model since it is not in use.
                             self.model_tracker.release_model_metadata_for_miner_hotkey(hotkey, model_i_metadata)
+                            model_i_metadata = None
                         break
 
             uid_to_hotkey_and_model_metadata[uid_i] = (hotkey, model_i_metadata)
