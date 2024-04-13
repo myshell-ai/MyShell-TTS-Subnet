@@ -25,6 +25,7 @@ import sys
 import time
 import torch
 import random
+import shutil
 import asyncio
 import argparse
 import typing
@@ -37,6 +38,7 @@ from model.model_tracker import ModelTracker
 from model.model_updater import ModelUpdater
 from model.storage.chain.chain_model_metadata_store import ChainModelMetadataStore
 from model.storage.disk.disk_model_store import DiskModelStore
+from model.storage.disk.utils import get_hf_download_path
 from model.storage.hugging_face.hugging_face_model_store import HuggingFaceModelStore
 import traceback
 import threading
@@ -199,10 +201,10 @@ class Validator:
             help="datatype to load model in, either bfloat16 or float16",
         )
         parser.add_argument(
-            "--grace_period_minutes",
+            "--clean_period_minutes",
             type=int,
-            default=240,
-            help="Grace period before old submissions from a UID are deleted",
+            default=1,
+            help="How often to delete unused models",
         )
         parser.add_argument(
             "--update_delay_minutes",
@@ -377,18 +379,6 @@ class Validator:
                             f"Unable to sync model for consensus UID {uid} with hotkey {hotkey}"
                         )
 
-            # only download new models since last full consensus set
-            block = self.metagraph.block.item()
-            tempo = self.subtensor.get_subnet_hyperparameters(self.config.netuid).tempo
-            last_consensus_block = nearest_tempo(
-                constants.SUBNET_START_BLOCK, tempo, block - tempo
-            )
-
-            bt.logging.debug(
-                f"Only downloading models newer than block {last_consensus_block}"
-            )
-            self.model_updater.set_min_block(last_consensus_block)
-
         # Touch all models, starting a timer for them to be deleted if not used
         self.model_tracker.touch_all_miner_models()
 
@@ -404,7 +394,7 @@ class Validator:
         # == Initialize the cleaner thread to remove outdated models ==
         self.clean_thread = threading.Thread(
             target=self.clean_models,
-            args=(self.config.grace_period_minutes,),
+            args=(self.config.clean_period_minutes,),
             daemon=True,
         )
         self.clean_thread.start()
@@ -499,34 +489,28 @@ class Validator:
 
         bt.logging.info("Exiting update models loop.")
 
-    def clean_models(self, grace_period_minutes: int):
+    def clean_models(self, clean_period_minutes: int):
         # The below loop checks to clear out all models in local storage that are no longer referenced.
         while not self.stop_event.is_set():
             try:
-                bt.logging.trace("Starting cleanup of stale models.")
-                # Clean out unreferenced models
-                hotkey_to_model_metadata = (
-                    self.model_tracker.get_miner_hotkey_to_model_metadata_dict()
-                )
-                hotkey_to_id = {
-                    hotkey: metadata.id
-                    for hotkey, metadata in hotkey_to_model_metadata.items()
-                }
-                hotkey_to_model_last_touched = (
-                    self.model_tracker.get_miner_hotkey_to_last_touched_dict()
-                )
-                hotkey_to_last_touched = {
-                    hotkey: touched
-                    for hotkey, touched in hotkey_to_model_last_touched.items()
-                }
-                self.local_store.delete_unreferenced_models(
-                    hotkey_to_id, hotkey_to_last_touched, 60 * grace_period_minutes
-                )
+                old_models = self.model_tracker.get_and_clear_old_models()
+
+                if len(old_models) > 0:
+                    bt.logging.info("Starting cleanup of stale models. Removing {}...".format(len(old_models)))
+
+                for hotkey, model_metadata in old_models:
+                    local_path = self.local_store.get_path(hotkey)
+                    model_dir = get_hf_download_path(local_path, model_metadata.id)
+                    shutil.rmtree(model_dir, ignore_errors=True)
+
+                if len(old_models) > 0:
+                    bt.logging.info("Starting cleanup of stale models. Removing {}... Done!".format(len(old_models)))
+
             except Exception as e:
                 bt.logging.error(f"Error in clean loop: {e}")
                 print(traceback.format_exc())
 
-            time.sleep(dt.timedelta(minutes=grace_period_minutes).total_seconds())
+            time.sleep(dt.timedelta(minutes=clean_period_minutes).total_seconds())
 
         bt.logging.info("Exiting clean models loop.")
 
@@ -647,13 +631,14 @@ class Validator:
         load_model_perf = PerfMonitor("Eval: Load model")
         compute_loss_perf = PerfMonitor("Eval: Compute loss")
 
+        self.model_tracker.release_all()
         uid_to_hotkey_and_model_metadata: typing.Dict[
             int, typing.Tuple[str, typing.Optional[ModelMetadata]]
         ] = {}
         for uid_i in uids:
             # Check that the model is in the tracker.
             hotkey = self.metagraph.hotkeys[uid_i]
-            model_i_metadata = self.model_tracker.get_model_metadata_for_miner_hotkey(
+            model_i_metadata = self.model_tracker.take_model_metadata_for_miner_hotkey(
                 hotkey
             )
 
@@ -670,6 +655,8 @@ class Validator:
                             bt.logging.debug(
                                 f"Perferring duplicate of {other_uid} with {uid_i} since it is older"
                             )
+                            # Release the other model since it is not in use.
+                            self.model_tracker.release_model_metadata_for_miner_hotkey(other_hotkey, other_metadata)
                             uid_to_hotkey_and_model_metadata[other_uid] = (
                                 other_hotkey,
                                 None,
@@ -679,6 +666,8 @@ class Validator:
                                 f"Perferring duplicate of {uid_i} with {other_uid} since it is newer"
                             )
                             model_i_metadata = None
+                            # Release own model since it is not in use.
+                            self.model_tracker.release_model_metadata_for_miner_hotkey(hotkey, model_i_metadata)
                         break
 
             uid_to_hotkey_and_model_metadata[uid_i] = (hotkey, model_i_metadata)
@@ -729,6 +718,9 @@ class Validator:
                         bt.logging.error(
                             f"Error in eval loop: {e}. Setting losses for uid: {uid_i} to infinity."
                         )
+                    finally:
+                        # After we are done with the model, release it.
+                        self.model_tracker.release_model_metadata_for_miner_hotkey(hotkey, model_i_metadata)
                 else:
                     bt.logging.debug(
                         f"Skipping {uid_i}, submission is for a different competition ({model_i_metadata.id.competition_id}). Setting loss to inifinity."
