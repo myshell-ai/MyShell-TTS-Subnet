@@ -1,4 +1,5 @@
 import bittensor as bt
+import asyncio
 from typing import Optional
 from constants import CompetitionParameters, COMPETITION_SCHEDULE
 import constants
@@ -38,6 +39,10 @@ class ModelUpdater:
     async def _get_metadata(self, hotkey: str) -> Optional[ModelMetadata]:
         """Get metadata about a model by hotkey"""
         return await self.metadata_store.retrieve_model_metadata(hotkey)
+
+    async def sync_models(self, hotkeys: list[str]):
+        tasks = [self.sync_model(hotkey) for hotkey in hotkeys]
+        return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def sync_model(self, hotkey: str) -> bool:
         """Updates local model for a hotkey if out of sync and returns if it was updated."""

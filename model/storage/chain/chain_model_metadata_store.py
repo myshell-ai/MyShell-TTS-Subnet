@@ -47,7 +47,7 @@ class ChainModelMetadataStore(ModelMetadataStore):
             bt.extrinsics.serving.get_metadata, self.subtensor, self.subnet_uid, hotkey
         )
 
-        metadata = utils.run_in_subprocess(partial, 60)
+        metadata = utils.run_in_subprocess(partial, 20)
 
         if not metadata:
             return None
