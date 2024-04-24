@@ -1,13 +1,16 @@
+from whisper.normalizers import EnglishTextNormalizer
+
 from tts_rater.models import ReferenceEncoder
 import torch
 from tts_rater.mel_processing import spectrogram_torch
 import librosa
 import os
+import eng_to_ipa as ipa
 from easydict import EasyDict as edict
 from torch.nn.functional import cosine_similarity, mse_loss
 import glob
 import numpy as np
-from jiwer import wer
+from jiwer import process_words
 import json
 import random
 import math
@@ -16,6 +19,8 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 from tqdm import tqdm
 import onnxruntime as ort
 import tempfile
+
+from tts_rater.pann import PANNModel
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -116,15 +121,19 @@ def compute_tone_color_loss(audio_paths, vec_gt, batch_size):
 
 # =================== Word error rate ===================
 
-whisper_processor = WhisperProcessor.from_pretrained("openai/whisper-small.en")
-whisper_model = WhisperForConditionalGeneration.from_pretrained(
-    "openai/whisper-small.en"
-).cuda()
+whisper_model = "openai/whisper-small.en"
+whisper_processor = WhisperProcessor.from_pretrained(whisper_model)
+whisper_model = WhisperForConditionalGeneration.from_pretrained(whisper_model).cuda()
+whisper_normalizer = EnglishTextNormalizer()
 
 
 def compute_wer(texts, audio_paths, batch_size):
     waveforms = [load_wav_file(fname, 16000) for fname in audio_paths]
-    wer_results = []
+
+    total_errs = []
+    total_words = []
+
+    # wer_results = []
     assert len(texts) == len(waveforms)
     for text_batch, audio_batch in tqdm(
         zip(batched(texts, batch_size), batched(waveforms, batch_size)),
@@ -146,8 +155,24 @@ def compute_wer(texts, audio_paths, batch_size):
             generated_ids, skip_special_tokens=True
         )
         for in_text, out_text in zip(text_batch, transcription):
-            wer_results.append(wer(in_text.strip(), out_text.strip()))
-    return wer_results
+            in_text_whisper = whisper_normalizer(in_text)
+            out_text_whisper = whisper_normalizer(out_text)
+            output = process_words(in_text_whisper, out_text_whisper)
+
+            for alignment in output.alignments[0]:
+                if alignment.type != "substitute":
+                    continue
+                orig_word = in_text_whisper.split(" ")[alignment.ref_start_idx : alignment.ref_end_idx]
+                pred_word = out_text_whisper.split(" ")[alignment.hyp_start_idx : alignment.hyp_end_idx]
+                if ipa.convert(orig_word) == ipa.convert(pred_word):
+                    output.substitutions -= 1
+                    output.hits += 1
+
+            S, D, I, H = output.substitutions, output.deletions, output.insertions, output.hits
+            total_errs.append(I + S + D)
+            total_words.append(S + D + H)
+
+    return np.array(total_errs), np.array(total_words)
 
 
 # =================== DNS-MOS loss ===================
@@ -188,10 +213,85 @@ def compute_dns_mos_loss(audio_paths, batch_size):
     return [-x for x in dns_mos_results]
 
 
+# =================== PANN MMD loss ===================
+speaker_pann_embeds = torch.load(os.path.join(script_dir, "pann/pann_embeds.pth"), map_location="cuda")
+pann_model = PANNModel()
+
+def compute_mmd(a_x: torch.Tensor, b_y: torch.Tensor):
+    _SIGMA = 10
+    _SCALE = 1000
+
+    a_x = a_x.double()
+    b_y = b_y.double()
+
+    a_x_sqnorms = torch.sum(a_x**2, dim=1)
+    b_y_sqnorms = torch.sum(b_y**2, dim=1)
+
+    gamma = 1 / (2 * _SIGMA**2)
+
+    k_xx = torch.mean(torch.exp(-gamma * (-2 * (a_x @ a_x.T) + a_x_sqnorms[:, None] + a_x_sqnorms[None, :])))
+    k_xy = torch.mean(torch.exp(-gamma * (-2 * (a_x @ b_y.T) + a_x_sqnorms[:, None] + b_y_sqnorms[None, :])))
+    k_yy = torch.mean(torch.exp(-gamma * (-2 * (b_y @ b_y.T) + b_y_sqnorms[:, None] + b_y_sqnorms[None, :])))
+
+    return _SCALE * (k_xx + k_yy - 2 * k_xy)
+
+
+def compute_pann_mmd_loss(audio_paths: list[str], n_boostrap: int, rng: np.random.Generator = None):
+    if rng is None:
+        rng = np.random.default_rng()
+
+    n_samples = len(audio_paths)
+    waveforms = [load_wav_file(fname, 32000) for fname in audio_paths]
+
+    embeddings = []
+    for audio in tqdm(waveforms):
+        audio = torch.Tensor(audio).cuda()
+        embedding = pann_model.get_embedding(audio[None])[0]
+        embeddings.append(embedding)
+    embeddings = torch.stack(embeddings, dim=0)
+
+    mmd_losses = []
+    for ii in range(n_boostrap):
+        idxs = rng.choice(n_samples, size=(n_samples,), replace=True)
+        sampled_embeddings = embeddings[idxs]
+        mmd = compute_mmd(speaker_pann_embeds, sampled_embeddings)
+        mmd_losses.append(mmd.item())
+
+    return mmd_losses
+
+
 # =================== Rate function ===================
 
 # TODO: Read texts from Internet or use a larger dataset
 texts = json.load(open(os.path.join(script_dir, "text_list.json")))
+
+
+def get_normalized_scores(raw_errs: dict[str, float]):
+    score_ranges = {"pann_mmd": (0.0, 200.0), "word_error_rate": (0.0, 0.08), "tone_color": (0.15, 0.4)}
+    normalized_scores = {}
+    for key, value in raw_errs.items():
+        min_val, max_val = score_ranges[key]
+        normalized_err = (np.asarray(value) - min_val) / (max_val - min_val)
+        normalized_scores[key] = np.clip(1 - normalized_err, 1e-6, 1.0)
+    return normalized_scores
+
+
+def compute_sharpe_ratios(scores: list[float]) -> list[float]:
+    # Jackknife estimate of the Sharpe ratio.
+    n = len(scores)
+    sharpe_ratios = []
+    for ii in range(n):
+        scores_jack = scores[:ii] + scores[ii + 1 :]
+        mean_jack = np.mean(scores_jack)
+        std_jack = np.std(scores_jack, ddof=1)
+        sharpe_jack = mean_jack / std_jack
+
+        if mean_jack < 1e-6 and std_jack == 0.0:
+            sharpe_jack = 0.0
+
+        sharpe_ratios.append(sharpe_jack)
+
+    return sharpe_ratios
 
 
 def rate(
@@ -200,15 +300,26 @@ def rate(
     seed=0,
     samples=64,
     batch_size=16,
-    group_size=16,
+    n_bootstrap: int = 256,
+    use_tmpdir=False,
+):
+    return rate_(ckpt_path, speaker, seed, samples, batch_size, n_bootstrap, use_tmpdir)[0]
+
+
+def rate_(
+    ckpt_path,
+    speaker="p225",
+    seed=0,
+    samples=64,
+    batch_size=16,
+    n_bootstrap: int = 256,
     use_tmpdir=False,
 ):
     """
     Compute the following metrics for a given checkpoint:
-    - Tone color loss
+    - PANN MMD
     - Word error rate
-    And then aggregate the losses by group_size to improve the stability of the results.
-
+    Then normalize the scores to (nominally) [0, 1] range.
     """
     from melo.api import TTS
 
@@ -218,6 +329,8 @@ def rate(
 
     random.seed(seed)
     text_test = random.choices(texts, k=samples)
+    rng = np.random.default_rng(seed=seed + 7)
+    torch.random.manual_seed(seed + 11)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         if use_tmpdir:
@@ -229,20 +342,29 @@ def rate(
 
         audio_paths = sorted(glob.glob(os.path.join(tmpdir, "*.wav")))
 
-        tone_color_losses = compute_tone_color_loss(
-            audio_paths, vec_gt_dict[speaker], batch_size
-        )
-        word_error_rate = compute_wer(text_test, audio_paths, batch_size)
-        dns_mos_losses = compute_dns_mos_loss(audio_paths, batch_size)
+        pann_mmds = compute_pann_mmd_loss(audio_paths, n_bootstrap, rng=rng)
+        total_errs, total_words = compute_wer(text_test, audio_paths, batch_size)
+        word_error_rates = []
+        for _ in range(n_bootstrap):
+            idxs = rng.choice(samples, (samples,), replace=True)
+            word_error_rates.append(total_errs[idxs].sum() / total_words[idxs].sum())
 
-    losses = tone_color_losses + word_error_rate + dns_mos_losses
+        vec_gt = vec_gt_dict[speaker]
+        tcs = compute_tone_color_loss(audio_paths, vec_gt, batch_size)
+        idxs = rng.choice(samples, (n_bootstrap,), replace=True)
+        tcs = np.asarray(tcs)[idxs]
 
-    # Aggregate the losses by group_size
-    agg_losses = []
-    for i in range(0, len(losses), group_size):
-        agg_losses.append(sum(losses[i : i + group_size]) / group_size)
+    assert len(pann_mmds) == len(word_error_rates) == n_bootstrap
+    raw_errs = {"pann_mmd": pann_mmds, "word_error_rate": word_error_rates, "tone_color": tcs}
+    norm_dict = get_normalized_scores(raw_errs)
 
-    return agg_losses
+    keys = list(norm_dict.keys())
+    norm_scores = []
+    for ii in range(n_bootstrap):
+        norm_score = np.prod([norm_dict[k][ii] for k in keys])
+        norm_scores.append(norm_score)
+
+    return norm_scores, norm_dict
 
 
 if __name__ == "__main__":
@@ -254,8 +376,8 @@ if __name__ == "__main__":
     parser.add_argument("--speaker", type=str, default="p225")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--samples", type=int, default=64)
+    parser.add_argument("--n_bootstrap", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--group_size", type=int, default=16)
     args = parser.parse_args()
 
     print(
@@ -265,7 +387,7 @@ if __name__ == "__main__":
             args.seed,
             args.samples,
             args.batch_size,
-            args.group_size,
+            args.n_bootstrap,
             args.use_tmpdir,
         )
     )

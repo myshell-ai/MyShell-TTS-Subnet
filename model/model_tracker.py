@@ -45,6 +45,9 @@ class ModelTracker:
         with open(filepath, "rb") as f:
             self.miner_hotkey_to_model_metadata_dict = pickle.load(f)
 
+    def has_model(self, hotkey: str) -> bool:
+        return hotkey in self.miner_hotkey_to_model_metadata_dict
+
     def get_miner_hotkey_to_model_metadata_dict(self) -> Dict[str, ModelMetadata]:
         """Returns the mapping from miner hotkey to model metadata."""
 

@@ -44,11 +44,9 @@ assert math.isclose(sum(x.reward_percentage for x in COMPETITION_SCHEDULE), 1.0)
 # Miner/Validator Model parameters.
 # ---------------------------------
 
-weights_version_key = 1
+weights_version_key = 2
 
 # validator weight moving average term
 alpha = 0.9
 # validator scoring exponential temperature
-temperature = 0.08
-# validator score boosting for earlier models.
-timestamp_epsilon = 0.01
+temperature = 6.0
