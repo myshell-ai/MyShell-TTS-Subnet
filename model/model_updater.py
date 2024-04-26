@@ -44,6 +44,57 @@ class ModelUpdater:
         tasks = [self.sync_model(hotkey) for hotkey in hotkeys]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def sync_model_metadata_only(self, hotkey: str) -> bool:
+        """Updates the metadata only for a hotkey if out of sync and returns if it was updated."""
+        metadata = await self._get_metadata(hotkey)
+
+        if not metadata:
+            bt.logging.trace(
+                f"No valid metadata found on the chain for hotkey {hotkey}"
+            )
+            return False
+
+        if self.min_block and metadata.block < self.min_block:
+            bt.logging.trace(
+                f"Skipping model for {hotkey} since it was submitted at block {metadata.block} which is less than the minimum block {self.min_block}"
+            )
+            return False
+
+        # Backwards compatability for models submitted before competition id added
+        if metadata.id.competition_id is None:
+            metadata.id.competition_id = constants.ORIGINAL_COMPETITION_ID
+
+        parameters = ModelUpdater.get_competition_parameters(metadata.id.competition_id)
+        if not parameters:
+            bt.logging.trace(
+                f"No competition parameters found for {metadata.id.competition_id}"
+            )
+            return False
+
+        self.model_tracker.on_miner_model_updated_metadata_only(hotkey, metadata)
+        return True
+
+    async def ensure_model_downloaded(self, hotkey: str):
+        with self.model_tracker.lock:
+            if hotkey in self.model_tracker.model_downloaded:
+                return
+
+            metadata = self.model_tracker.miner_hotkey_to_model_metadata_dict[hotkey]
+            parameters = ModelUpdater.get_competition_parameters(metadata.id.competition_id)
+
+            # Get the local path based on the local store to download to (top level hotkey path)
+            path = self.local_store.get_path(hotkey)
+            # Otherwise we need to download the new model based on the metadata.
+            model = await self.remote_store.download_model(metadata.id, path, parameters)
+
+            # Check that the hash of the downloaded content matches.
+            if model.id.hash != metadata.id.hash:
+                raise ValueError(
+                    f"download_model for hotkey {hotkey} failed. Hash of content downloaded from hugging face does not match chain metadata. {metadata}"
+                )
+
+            self.model_tracker.model_downloaded.add(hotkey)
+
     async def sync_model(self, hotkey: str) -> bool:
         """Updates local model for a hotkey if out of sync and returns if it was updated."""
         # Get the metadata for the miner.

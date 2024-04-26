@@ -20,6 +20,8 @@ class ModelTracker:
         self.miner_hotkey_to_model_metadata_dict: dict[str, ModelMetadata] = dict()
         # Create a dict from miner hotkey to last time it was evaluated/loaded/updated
         self.miner_hotkey_to_last_touched_dict: dict[str, datetime.datetime] = dict()
+        # Create a dict from miner hotkey to whether the model has been downloaded locally or not.
+        self.model_downloaded: set[str] = set()
 
         # List of overwritten models that may be safe to delete if not curently in use.
         self.old_model_metadata: list[tuple[str, ModelMetadata]] = []
@@ -124,6 +126,21 @@ class ModelTracker:
 
         return to_delete
 
+    def on_miner_model_updated_metadata_only(self,
+                                             hotkey: str,
+                                             model_metadata: ModelMetadata,
+                                             ):
+        with self.lock:
+            if hotkey in self.miner_hotkey_to_model_metadata_dict:
+                old_metadata = self.miner_hotkey_to_model_metadata_dict[hotkey]
+                self.old_model_metadata.append((hotkey, old_metadata))
+
+            self.miner_hotkey_to_model_metadata_dict[hotkey] = model_metadata
+            self.miner_hotkey_to_last_touched_dict[hotkey] = datetime.datetime.now()
+            self.model_downloaded.discard(hotkey)
+
+            bt.logging.trace(f"Updated Miner {hotkey}. ModelMetadata={model_metadata}.")
+
     def on_miner_model_updated(
         self,
         hotkey: str,
@@ -142,6 +159,7 @@ class ModelTracker:
 
             self.miner_hotkey_to_model_metadata_dict[hotkey] = model_metadata
             self.miner_hotkey_to_last_touched_dict[hotkey] = datetime.datetime.now()
+            self.model_downloaded.add(hotkey)
 
             bt.logging.trace(f"Updated Miner {hotkey}. ModelMetadata={model_metadata}.")
 
