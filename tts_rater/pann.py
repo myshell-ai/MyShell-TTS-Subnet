@@ -1,9 +1,9 @@
 import math
-import os
 import pathlib
 
 import librosa
 import numpy as np
+import requests
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -1115,7 +1115,8 @@ class PANNModel:
         if not checkpoint_path.exists():
             checkpoint_path.parent.mkdir(exist_ok=True)
             dl_path = "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1"
-            os.system('wget -O "{}" "{}"'.format(checkpoint_path, dl_path))
+            with open(checkpoint_path, "wb") as f:
+                f.write(requests.get(dl_path).content)
 
         if device == "cuda" and torch.cuda.is_available():
             self.device = "cuda"

@@ -17,6 +17,9 @@
 # DEALINGS IN THE SOFTWARE.
 
 import datetime as dt
+
+import tqdm
+import logging
 import json
 import time
 import random
@@ -71,6 +74,29 @@ def nearest_tempo(start_block, tempo, block):
     if nearest_num >= block:
         nearest_num -= tempo
     return nearest_num
+
+
+class RandomQueue:
+    def __init__(self, items: np.ndarray):
+        self.items = items
+        self.rng = np.random.default_rng()
+        self.queue = self._get_shuffled()
+        self.epochs = 0
+
+    def _get_shuffled(self) -> list:
+        return self.rng.choice(self.items, len(self.items), replace=False).tolist()
+
+    def take(self, n: int):
+        return [self.next() for _ in range(n)]
+
+    def take_all(self):
+        return self.take(len(self.queue))
+
+    def next(self):
+        if len(self.queue) == 0:
+            self.queue = self._get_shuffled()
+            self.epochs += 1
+        return self.queue.pop()
 
 
 class Validator:
@@ -193,7 +219,21 @@ class Validator:
 
     def __init__(self):
         self.config = Validator.config()
+        if self.config.logging_dir is None:
+            self.config.logging_dir = "."
         bt.logging(config=self.config)
+        bt.logging.on()
+
+        for name, logger in logging.root.manager.loggerDict.items():
+            if isinstance(logger, logging.Logger):
+                if "huggingface_hub" in name:
+                    logger.setLevel(logging.INFO)
+                if "transformers" in name:
+                    logger.setLevel(logging.WARNING)
+                if name == "huggingface_hub.file_download":
+                    # To remove the progress bars from downloading hf models.
+                    print("name: {}".format(name))
+                    logger.getEffectiveLevel = lambda: logging.NOTSET
 
         bt.logging.info(f"Starting validator with config: {self.config}")
 
@@ -229,6 +269,7 @@ class Validator:
         # Default to an infinite block if we can't retrieve the metadata for the miner.
         self.block = np.full_like(self.weights, np.iinfo(np.int64).max, dtype=np.int64)
 
+        self.uid_last_checked = {}
         self.uids_to_eval: typing.Dict[str, typing.Set] = {}
         self.rng = np.random.default_rng()
 
@@ -259,50 +300,55 @@ class Validator:
         )
 
         # Sync to consensus
-        if not self.config.genesis:
-            bt.logging.trace("Pulling competition ids for all hotkeys")
-            competition_ids: typing.Dict[int, typing.Optional[str]] = {}
-            for uid, hotkey in enumerate(list(self.metagraph.hotkeys)):
-                competition_ids[uid] = constants.ORIGINAL_COMPETITION_ID
+        bt.logging.trace("Pulling competition ids for all hotkeys")
+        competition_ids: typing.Dict[int, typing.Optional[str]] = {}
+        for uid, hotkey in enumerate(list(self.metagraph.hotkeys)):
+            competition_ids[uid] = constants.ORIGINAL_COMPETITION_ID
 
-            self.weights.copy_(self.metagraph.C)
+        self.weights.copy_(self.metagraph.C)
 
-            for competition in constants.COMPETITION_SCHEDULE:
-                bt.logging.trace(
-                    f"Building consensus state for competition {competition.competition_id}"
-                )
-                # Evaluate all models on the first iteration.
-                consensus = [i for i, val in enumerate(list(self.metagraph.consensus)) if competition_ids[i] == competition.competition_id]
+        for competition in constants.COMPETITION_SCHEDULE:
+            bt.logging.trace(
+                f"Building consensus state for competition {competition.competition_id}"
+            )
+            # Evaluate all models on the first iteration.
+            consensus = [i for i, val in enumerate(list(self.metagraph.consensus)) if competition_ids[i] == competition.competition_id]
+            self.uids_queue = RandomQueue(np.array(consensus))
+            uids_to_eval = set(self.uids_queue.take(16))
+            self.uids_to_eval[competition.competition_id] = uids_to_eval
 
-                self.uids_to_eval[competition.competition_id] = set(consensus)
+            consensus_map = {uid: self.weights[uid].item() for uid in consensus}
+            bt.logging.info(
+                f"Consensus for competition {competition.competition_id}: {consensus_map}"
+            )
 
-                consensus_map = {uid: self.weights[uid].item() for uid in consensus}
-                bt.logging.info(
-                    f"Consensus for competition {competition.competition_id}: {consensus_map}"
-                )
+            # Sync the first few models, we can sync the rest while running.
+            bt.logging.info("Syncing models for the first 16 hotkeys. This may take a while...")
+            uids_to_sync = list(uids_to_eval)[:16]
+            hotkeys = [self.metagraph.hotkeys[uid] for uid in uids_to_sync]
+            results = asyncio.run(self.model_updater.sync_models(hotkeys))
+            bt.logging.info("Syncing models for the first 16 hotkeys. This may take a while... Done!")
 
-                hotkeys = [self.metagraph.hotkeys[uid] for uid in consensus]
-                results = asyncio.run(self.model_updater.sync_models(hotkeys))
+            for uid in uids_to_sync:
+                self.uid_last_checked[uid] = dt.datetime.now()
 
-                for ii, uid in enumerate(consensus):
-                    hotkey = self.metagraph.hotkeys[uid]
-                    result = results[ii]
-                    if isinstance(result, Exception):
-                        bt.logging.warning(
-                            f"Unable to sync model for consensus UID {uid} with hotkey {hotkey}. Exception {result}"
+            for ii, uid in enumerate(uids_to_sync):
+                hotkey = self.metagraph.hotkeys[uid]
+                result = results[ii]
+                if isinstance(result, Exception):
+                    bt.logging.warning(
+                        f"Unable to sync model for consensus UID {uid} with hotkey {hotkey}. Exception {result}"
+                    )
+
+                if (
+                        self.model_tracker.get_model_metadata_for_miner_hotkey(
+                            hotkey
                         )
-
-                    if (
-                            self.model_tracker.get_model_metadata_for_miner_hotkey(
-                                hotkey
-                            )
-                            is None
-                    ):
-                        bt.logging.warning(
-                            f"Unable to get metadata for consensus UID {uid} with hotkey {hotkey}"
-                        )
-                    else:
-                        bt.logging.info(f"Synced model for UID={uid}")
+                        is None
+                ):
+                    is_vali = self.metagraph.Tv[uid] > 0
+                    if not is_vali:
+                        bt.logging.warning(f"Unable to get metadata for consensus UID {uid} with hotkey {hotkey}")
 
         # Touch all models, starting a timer for them to be deleted if not used
         self.model_tracker.touch_all_miner_models()
@@ -353,7 +399,7 @@ class Validator:
 
     def update_models(self, update_delay_minutes):
         # Track how recently we updated each uid
-        uid_last_checked = dict()
+        uid_last_checked = self.uid_last_checked
 
         # The below loop iterates across all miner uids and checks to see
         # if they should be updated.
@@ -401,6 +447,8 @@ class Validator:
                             f"Unable to sync model for consensus UID {next_uid} with hotkey {hotkey}"
                         )
 
+            except TimeoutError as e:
+                bt.logging.warning(f"Timeout trying to sync metagraph. This is normal when the chain is congested: {e}")
             except Exception as e:
                 bt.logging.error(f"Error in update loop: {e}")
 
@@ -415,13 +463,21 @@ class Validator:
                 if len(old_models) > 0:
                     bt.logging.info("Starting cleanup of stale models. Removing {}...".format(len(old_models)))
 
+                uids_removed = []
                 for hotkey, model_metadata in old_models:
                     local_path = self.local_store.get_path(hotkey)
                     model_dir = get_hf_download_path(local_path, model_metadata.id)
                     shutil.rmtree(model_dir, ignore_errors=True)
 
+                    if hotkey in self.metagraph.hotkeys:
+                        uid = self.metagraph.hotkeys.index(hotkey)
+                        uids_removed.append(uid)
+                    else:
+                        repo_name = "{}/{}".format(model_metadata.id.namespace, model_metadata.id.name)
+                        uids_removed.append(repo_name)
+
                 if len(old_models) > 0:
-                    bt.logging.info("Starting cleanup of stale models. Removing {}... Done!".format(len(old_models)))
+                    bt.logging.info("Removed {} uids  -  {}".format(len(uids_removed), uids_removed))
 
             except Exception as e:
                 bt.logging.error(f"Error in clean loop: {e}")
@@ -531,6 +587,7 @@ class Validator:
         bt.logging.debug(
             f"Computing metrics on {uids} for competition {competition_parameters.competition_id}"
         )
+        bt.logging.info("run_step_count = {},  uids_queue.epochs = {}".format(self.run_step_count, self.uids_queue.epochs))
         scores_per_uid = {muid: None for muid in uids}
         sample_per_uid = {muid: None for muid in uids}
 
@@ -538,12 +595,26 @@ class Validator:
         compute_loss_perf = PerfMonitor("Eval: Compute loss")
 
         self.model_tracker.release_all()
+        is_duplicate = []
+        not_in_tracker = []
         uid_to_hotkey_and_model_metadata: typing.Dict[
             int, typing.Tuple[str, typing.Optional[ModelMetadata]]
         ] = {}
         for uid_i in uids:
             # Check that the model is in the tracker.
             hotkey = self.metagraph.hotkeys[uid_i]
+
+            if self.uids_queue.epochs == 0 and uid_i not in self.uid_last_checked:
+                # On the first step, don't ignore models that have not been synced unless we have tried to sync and failed.
+                hotkey = self.metagraph.hotkeys[uid_i]
+                while True:
+                    # Retry if we get a timeout while querying the chain for model metadata.
+                    try:
+                        asyncio.run(self.model_updater.sync_model_metadata_only(hotkey))
+                        break
+                    except TimeoutError as e:
+                        pass
+
             model_i_metadata = self.model_tracker.take_model_metadata_for_miner_hotkey(
                 hotkey
             )
@@ -558,39 +629,47 @@ class Validator:
                         and model_i_metadata.id.hash == other_metadata.id.hash
                     ):
                         if model_i_metadata.block < other_metadata.block:
-                            bt.logging.debug(
-                                f"Perferring duplicate of {other_uid} with {uid_i} since it is older"
-                            )
+                            bt.logging.debug(f"Preferring duplicate of {uid_i} over {other_uid} since it is older")
                             # Release the other model since it is not in use.
                             self.model_tracker.release_model_metadata_for_miner_hotkey(other_hotkey, other_metadata)
                             uid_to_hotkey_and_model_metadata[other_uid] = (
                                 other_hotkey,
                                 None,
                             )
+                            is_duplicate.append(other_uid)
                         else:
-                            bt.logging.debug(
-                                f"Perferring duplicate of {uid_i} with {other_uid} since it is newer"
-                            )
+                            bt.logging.debug(f"Preferring duplicate of {other_uid} over {uid_i} since it is older")
                             # Release own model since it is not in use.
                             self.model_tracker.release_model_metadata_for_miner_hotkey(hotkey, model_i_metadata)
                             model_i_metadata = None
+                            is_duplicate.append(uid_i)
                         break
             else:
-                bt.logging.debug(
-                    f"Model for {uid_i} is not in the tracker. Skipping."
-                )
+                is_vali = self.metagraph.Tv[uid_i] > 0
+                if is_vali:
+                    bt.logging.debug(
+                        f"Model for {uid_i} is a validator and not in the tracker. Skipping."
+                    )
+                else:
+                    bt.logging.debug(
+                        f"Model for {uid_i} is not in the tracker. Skipping."
+                    )
+                not_in_tracker.append(uid_i)
 
             uid_to_hotkey_and_model_metadata[uid_i] = (hotkey, model_i_metadata)
 
         seed = random.randint(0, 2**16)
 
-        n_samples = self.config.num_samples_per_eval
         batch_size = self.config.batch_size
+        n_samples = self.config.num_samples_per_eval
         n_bootstrap = 256
-        for uid_i, (
+        pbar = tqdm.tqdm(uid_to_hotkey_and_model_metadata.items(), desc="Rate Models", leave=True)
+        n_eval_total = len(uid_to_hotkey_and_model_metadata)
+
+        for idx, (uid_i, (
             hotkey,
             model_i_metadata,
-        ) in uid_to_hotkey_and_model_metadata.items():
+        )) in enumerate(pbar):
             scores = None
 
             if model_i_metadata is not None:
@@ -598,6 +677,10 @@ class Validator:
                     model_i_metadata.id.competition_id
                     == competition_parameters.competition_id
                 ):
+                    if self.run_step_count == 0:
+                        # It is possible that we did not download a model. We should ensure that it is downloaded.
+                        asyncio.run(self.model_updater.ensure_model_downloaded(hotkey))
+
                     self.model_tracker.touch_miner_model(hotkey)
 
                     try:
@@ -610,7 +693,7 @@ class Validator:
 
                         with compute_loss_perf.sample():
                             bt.logging.info(
-                                f"Computing loss for uid: {uid_i}, ckpt: {model_i.ckpt}"
+                                f"{idx}/{n_eval_total} Computing loss for uid: {uid_i}, ckpt: {model_i.ckpt}"
                             )
                             with threadpool_limits(limits=1, user_api="blas"):
                                 scores = rate(
@@ -626,7 +709,7 @@ class Validator:
                         torch.cuda.empty_cache()
                     except Exception as e:
                         bt.logging.error(
-                            f"Error in eval loop: {e}. Setting losses for uid: {uid_i} to infinity."
+                            f"Error in eval loop: {e}. Setting scores for uid: {uid_i} to zero."
                         )
                     finally:
                         # After we are done with the model, release it.
@@ -636,18 +719,25 @@ class Validator:
                     self.block[uid_i] = model_i_metadata.block
                 else:
                     bt.logging.debug(
-                        f"Skipping {uid_i}, submission is for a different competition ({model_i_metadata.id.competition_id}). Setting loss to inifinity."
+                        f"Skipping {uid_i}, submission is for a different competition ({model_i_metadata.id.competition_id}). Setting score to zero."
                     )
             else:
-                bt.logging.debug(
-                    f"Unable to load the model for {uid_i} (perhaps a duplicate?). Setting loss to inifinity."
-                )
+                if uid_i in is_duplicate:
+                    bt.logging.debug(
+                        f"Unable to load the model for {uid_i} because duplicate. Setting score to zero."
+                    )
+                elif uid_i in not_in_tracker:
+                    bt.logging.debug(
+                        f"Unable to load the model for {uid_i} because it doesn't have a model in the tracker."
+                    )
+                else:
+                    bt.logging.warning(f"Unable to load model for {uid_i}")
+
             if scores is None:
                 scores = [0.0 for _ in range(n_bootstrap)]
 
             scores_per_uid[uid_i] = scores
-
-            bt.logging.debug(f"Computed model losses for uid: {uid_i}: {scores}")
+            bt.logging.debug(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
 
         # Update the first and second moments.
         # Use a exponential moving average to update the sample mean and variance.
@@ -695,16 +785,15 @@ class Validator:
                     torch.zeros(new_weights.shape[0] - self.weights.shape[0]),
                 ]
             )
-        self.weights = (
-            constants.alpha * self.weights + (1 - constants.alpha) * new_weights
-        )
+        alpha = constants.alpha
+        if self.uids_queue.epochs >= 1:
+            self.weights = (
+                alpha * self.weights + (1 - alpha) * new_weights
+            )
         self.weights = self.weights.nan_to_num(0.0)
 
         # Randomly sample a new set of uids from the list of models that we currently have.
-        with self.model_tracker.lock:
-            all_uids = [uid for uid, hotkey in enumerate(list(self.metagraph.hotkeys)) if self.model_tracker.has_model(hotkey)]
-        sample_min = min(128, len(all_uids))
-        uids_to_eval = self.rng.choice(all_uids, (sample_min,), replace=False)
+        uids_to_eval = self.uids_queue.take(16)
         self.uids_to_eval[competition_parameters.competition_id] = set(uids_to_eval)
 
         # Log the performance of the eval loop.
@@ -715,15 +804,18 @@ class Validator:
         scores_per_uid = {k: v for k, v in scores_per_uid.items() if v is not None}
         uids = list(scores_per_uid.keys())
 
-        self.log_step(
-            competition_parameters.competition_id,
-            uids,
-            win_rate,
-            scores_per_uid,
-            sample_per_uid,
-            load_model_perf.summary_str(),
-            compute_loss_perf.summary_str(),
-        )
+        try:
+            self.log_step(
+                competition_parameters.competition_id,
+                uids,
+                win_rate,
+                scores_per_uid,
+                sample_per_uid,
+                load_model_perf.summary_str(),
+                compute_loss_perf.summary_str(),
+            )
+        except Exception as e:
+            bt.logging.warning(f"Error during log_step: {e}")
 
         # Increment the number of completed run steps by 1
         self.run_step_count += 1
@@ -827,9 +919,6 @@ class Validator:
                 "win_rate_data": {
                     str(uid): uid_data[str(uid)]["win_rate"] for uid in uids
                 },
-                "win_total_data": {
-                    str(uid): uid_data[str(uid)]["win_total"] for uid in uids
-                },
                 "sample_prompt_data": {
                     str(uid): uid_data[str(uid)]["sample_prompt"] for uid in uids
                 },
@@ -856,7 +945,7 @@ class Validator:
                     self.metagraph.block.item() - self.last_epoch
                     < self.config.blocks_per_epoch
                 ):
-                    await self.try_run_step(ttl=60 * 20)
+                    await self.try_run_step(ttl=60 * 40)
                     bt.logging.debug(
                         f"{self.metagraph.block.item() - self.last_epoch } / {self.config.blocks_per_epoch} blocks until next epoch."
                     )
