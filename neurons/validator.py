@@ -80,23 +80,30 @@ class RandomQueue:
     def __init__(self, items: np.ndarray):
         self.items = items
         self.rng = np.random.default_rng()
-        self.queue = self._get_shuffled()
+        self.seed, self.queue = self._get_shuffled()
         self.epochs = 0
 
-    def _get_shuffled(self) -> list:
-        return self.rng.choice(self.items, len(self.items), replace=False).tolist()
+    def _get_shuffled(self) -> tuple[int, list]:
+        seed = self.rng.integers(0, 2 ** 16)
+        return seed, self.rng.choice(self.items, len(self.items), replace=False).tolist()
 
     def take(self, n: int):
-        return [self.next() for _ in range(n)]
+        seeds = []
+        uids = []
+        for _ in range(n):
+            seed, uid = self.next()
+            seeds.append(seed)
+            uids.append(uid)
+        return seeds, uids
 
     def take_all(self):
         return self.take(len(self.queue))
 
     def next(self):
         if len(self.queue) == 0:
-            self.queue = self._get_shuffled()
+            self.seed, self.queue = self._get_shuffled()
             self.epochs += 1
-        return self.queue.pop()
+        return self.seed, self.queue.pop()
 
 
 class Validator:
@@ -270,7 +277,7 @@ class Validator:
         self.block = np.full_like(self.weights, np.iinfo(np.int64).max, dtype=np.int64)
 
         self.uid_last_checked = {}
-        self.uids_to_eval: typing.Dict[str, typing.Set] = {}
+        self.uids_to_eval: typing.Dict[str, typing.List] = {}
         self.rng = np.random.default_rng()
 
         # Setup a model tracker to track which miner is using which model id.
@@ -314,7 +321,7 @@ class Validator:
             # Evaluate all models on the first iteration.
             consensus = [i for i, val in enumerate(list(self.metagraph.consensus)) if competition_ids[i] == competition.competition_id]
             self.uids_queue = RandomQueue(np.array(consensus))
-            uids_to_eval = set(self.uids_queue.take(16))
+            self.seeds_to_eval, uids_to_eval = self.uids_queue.take(16)
             self.uids_to_eval[competition.competition_id] = uids_to_eval
 
             consensus_map = {uid: self.weights[uid].item() for uid in consensus}
@@ -600,6 +607,7 @@ class Validator:
         uid_to_hotkey_and_model_metadata: typing.Dict[
             int, typing.Tuple[str, typing.Optional[ModelMetadata]]
         ] = {}
+        uid_to_seed = {uid: seed for uid, seed in zip(uids, self.seeds_to_eval)}
         for uid_i in uids:
             # Check that the model is in the tracker.
             hotkey = self.metagraph.hotkeys[uid_i]
@@ -695,6 +703,7 @@ class Validator:
                             bt.logging.info(
                                 f"{idx}/{n_eval_total} Computing loss for uid: {uid_i}, ckpt: {model_i.ckpt}"
                             )
+                            seed = uid_to_seed[uid_i]
                             with threadpool_limits(limits=1, user_api="blas"):
                                 scores = rate(
                                     model_i.ckpt,
@@ -793,8 +802,8 @@ class Validator:
         self.weights = self.weights.nan_to_num(0.0)
 
         # Randomly sample a new set of uids from the list of models that we currently have.
-        uids_to_eval = self.uids_queue.take(16)
-        self.uids_to_eval[competition_parameters.competition_id] = set(uids_to_eval)
+        self.seeds_to_eval, uids_to_eval = self.uids_queue.take(16)
+        self.uids_to_eval[competition_parameters.competition_id] = uids_to_eval
 
         # Log the performance of the eval loop.
         bt.logging.debug(load_model_perf.summary_str())
