@@ -83,6 +83,10 @@ class RandomQueue:
         self.seed, self.queue = self._get_shuffled()
         self.epochs = 0
 
+    @property
+    def epoch_is_done(self):
+        return len(self.queue) == 0
+
     def _get_shuffled(self) -> tuple[int, list]:
         seed = self.rng.integers(0, 2 ** 16)
         return seed, self.rng.choice(self.items, len(self.items), replace=False).tolist()
@@ -190,7 +194,8 @@ class Validator:
         parser.add_argument(
             "--num_samples_per_eval",
             type=int,
-            default=96,
+            # default=96,
+            default=32,
             help="Number of samples to evaluate per UID",
         )
         parser.add_argument(
@@ -268,6 +273,7 @@ class Validator:
         self.global_step = 0
         self.last_epoch = self.metagraph.block.item()
 
+        self.ema_alpha = 0.9
         self.sample_mean_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.sample_var_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.count_per_uid = np.zeros_like(self.weights, dtype=np.int64)
@@ -376,6 +382,14 @@ class Validator:
             daemon=True,
         )
         self.clean_thread.start()
+
+    @property
+    def sample_stats_corrected(self):
+        count = self.count_per_uid
+        denom = 1 - self.ema_alpha ** count
+        sample_mean_corrected = np.where(count == 0, -1, self.sample_mean_per_uid / denom)
+        sample_var_corrected = np.where(count == 0, 1e-6, self.sample_var_per_uid / denom)
+        return sample_mean_corrected, sample_var_corrected
 
     def __del__(self):
         if hasattr(self, "stop_event"):
@@ -742,38 +756,36 @@ class Validator:
                 else:
                     bt.logging.warning(f"Unable to load model for {uid_i}")
 
-            if scores is None:
-                scores = [0.0 for _ in range(n_bootstrap)]
-
             scores_per_uid[uid_i] = scores
             bt.logging.debug(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
 
         # Update the first and second moments.
         # Use a exponential moving average to update the sample mean and variance.
-        ema_alpha = 0.9
+        ema_alpha = self.ema_alpha
         for uid_i in uids:
             sample_mean_prev, sample_var_prev = self.sample_mean_per_uid[uid_i], self.sample_var_per_uid[uid_i]
             scores = scores_per_uid[uid_i]
 
             if scores is None:
                 scores = [0.0 for _ in range(n_bootstrap)]
+            else:
+                self.count_per_uid[uid_i] += 1
 
             sample_mean = np.mean(scores)
             sample_var = np.var(scores, ddof=1)
 
-            self.count_per_uid[uid_i] += 1
-
             self.sample_mean_per_uid[uid_i] = ema_alpha * sample_mean_prev + (1-ema_alpha) * sample_mean
             self.sample_var_per_uid[uid_i] = ema_alpha * sample_var_prev + (1-ema_alpha) * sample_var
 
-            # Apply bias correction.
-            denom = 1 - ema_alpha ** self.count_per_uid[uid_i]
-            self.sample_mean_per_uid[uid_i] /= denom
-            self.sample_var_per_uid[uid_i] /= denom
-
         # Compute wins and win rates per uid.
         num = 8
-        win_rate = compute_wins(self.sample_mean_per_uid, self.sample_var_per_uid, self.block, num=num)
+        sample_mean_per_uid_corrected, sample_var_per_uid_corrected = self.sample_stats_corrected
+        win_rate = compute_wins(sample_mean_per_uid_corrected, sample_var_per_uid_corrected, self.block, num=num)
+
+        if self.uids_queue.epoch_is_done:
+            # Make sure the winrate of any uids that we have never evaluated is zero, so we don't give validators
+            # positive winrate.
+            win_rate[self.count_per_uid == 0] = 0
 
         # Compute softmaxed weights based on win rate.
         model_weights = torch.tensor(win_rate, dtype=torch.float32)
@@ -795,7 +807,9 @@ class Validator:
                 ]
             )
         alpha = constants.alpha
-        if self.uids_queue.epochs >= 1:
+
+        # Only update the weights once we have completed a full epoch, for each epoch.
+        if self.uids_queue.epoch_is_done:
             self.weights = (
                 alpha * self.weights + (1 - alpha) * new_weights
             )
