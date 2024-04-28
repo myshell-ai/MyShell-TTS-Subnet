@@ -194,8 +194,7 @@ class Validator:
         parser.add_argument(
             "--num_samples_per_eval",
             type=int,
-            # default=96,
-            default=32,
+            default=96,
             help="Number of samples to evaluate per UID",
         )
         parser.add_argument(
@@ -387,8 +386,9 @@ class Validator:
     def sample_stats_corrected(self):
         count = self.count_per_uid
         denom = 1 - self.ema_alpha ** count
-        sample_mean_corrected = np.where(count == 0, -1, self.sample_mean_per_uid / denom)
-        sample_var_corrected = np.where(count == 0, 1e-6, self.sample_var_per_uid / denom)
+        safe_denom = np.where(denom == 0, 1, denom)
+        sample_mean_corrected = np.where(count == 0, -1, self.sample_mean_per_uid / safe_denom)
+        sample_var_corrected = np.where(count == 0, 1e-6, self.sample_var_per_uid / safe_denom)
         return sample_mean_corrected, sample_var_corrected
 
     def __del__(self):
@@ -757,7 +757,8 @@ class Validator:
                     bt.logging.warning(f"Unable to load model for {uid_i}")
 
             scores_per_uid[uid_i] = scores
-            bt.logging.debug(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
+            if scores is not None:
+                bt.logging.debug(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
 
         # Update the first and second moments.
         # Use a exponential moving average to update the sample mean and variance.
