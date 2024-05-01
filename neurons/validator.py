@@ -699,7 +699,7 @@ class Validator:
                     model_i_metadata.id.competition_id
                     == competition_parameters.competition_id
                 ):
-                    if self.run_step_count == 0:
+                    if self.uids_queue.epochs == 0:
                         # It is possible that we did not download a model. We should ensure that it is downloaded.
                         asyncio.run(self.model_updater.ensure_model_downloaded(hotkey))
 
