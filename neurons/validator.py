@@ -43,7 +43,7 @@ import multiprocessing
 from rich.table import Table
 from rich.console import Console
 
-from neurons.validator_utils import compute_wins
+from neurons.validator_utils import compute_wins, EvalQueue, adjust_for_vtrust
 from utilities.miner_iterator import MinerIterator
 from utilities import utils
 from utilities.perf_monitor import PerfMonitor
@@ -74,40 +74,6 @@ def nearest_tempo(start_block, tempo, block):
     if nearest_num >= block:
         nearest_num -= tempo
     return nearest_num
-
-
-class RandomQueue:
-    def __init__(self, items: np.ndarray):
-        self.items = items
-        self.rng = np.random.default_rng()
-        self.seed, self.queue = self._get_shuffled()
-        self.epochs = 0
-
-    @property
-    def epoch_is_done(self):
-        return len(self.queue) == 0
-
-    def _get_shuffled(self) -> tuple[int, list]:
-        seed = self.rng.integers(0, 2 ** 16)
-        return seed, self.rng.choice(self.items, len(self.items), replace=False).tolist()
-
-    def take(self, n: int):
-        seeds = []
-        uids = []
-        for _ in range(n):
-            seed, uid = self.next()
-            seeds.append(seed)
-            uids.append(uid)
-        return seeds, uids
-
-    def take_all(self):
-        return self.take(len(self.queue))
-
-    def next(self):
-        if len(self.queue) == 0:
-            self.seed, self.queue = self._get_shuffled()
-            self.epochs += 1
-        return self.seed, self.queue.pop()
 
 
 class Validator:
@@ -272,7 +238,7 @@ class Validator:
         self.global_step = 0
         self.last_epoch = self.metagraph.block.item()
 
-        self.ema_alpha = 0.9
+        self.ema_alpha = 0.8
         self.sample_mean_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.sample_var_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.count_per_uid = np.zeros_like(self.weights, dtype=np.int64)
@@ -325,7 +291,7 @@ class Validator:
             )
             # Evaluate all models on the first iteration.
             consensus = [i for i, val in enumerate(list(self.metagraph.consensus)) if competition_ids[i] == competition.competition_id]
-            self.uids_queue = RandomQueue(np.array(consensus))
+            self.uids_queue = EvalQueue(self.weights.cpu().numpy())
             self.seeds_to_eval, uids_to_eval = self.uids_queue.take(16)
             self.uids_to_eval[competition.competition_id] = uids_to_eval
 
@@ -512,11 +478,13 @@ class Validator:
         async def _try_set_weights():
             try:
                 self.weights.nan_to_num(0.0)
+                adjusted_weights = adjust_for_vtrust(self.weights.cpu().numpy(), self.metagraph.C.cpu().numpy())
+                adjusted_weights = torch.tensor(adjusted_weights, device=self.config.device)
                 self.subtensor.set_weights(
                     netuid=self.config.netuid,
                     wallet=self.wallet,
                     uids=self.metagraph.uids,
-                    weights=self.weights,
+                    weights=adjusted_weights,
                     wait_for_inclusion=False,
                     version_key=constants.weights_version_key,
                 )
@@ -532,9 +500,9 @@ class Validator:
             console.print(table)
 
         try:
-            bt.logging.debug("Setting weights.")
+            bt.logging.info("Setting weights.")
             await asyncio.wait_for(_try_set_weights(), ttl)
-            bt.logging.debug("Finished setting weights.")
+            bt.logging.info("Finished setting weights.")
         except asyncio.TimeoutError:
             bt.logging.error(f"Failed to set weights after {ttl} seconds")
 
@@ -767,16 +735,14 @@ class Validator:
             sample_mean_prev, sample_var_prev = self.sample_mean_per_uid[uid_i], self.sample_var_per_uid[uid_i]
             scores = scores_per_uid[uid_i]
 
-            if scores is None:
-                scores = [0.0 for _ in range(n_bootstrap)]
-            else:
+            if scores is not None:
                 self.count_per_uid[uid_i] += 1
 
-            sample_mean = np.mean(scores)
-            sample_var = np.var(scores, ddof=1)
+                sample_mean = np.mean(scores)
+                sample_var = np.var(scores, ddof=1)
 
-            self.sample_mean_per_uid[uid_i] = ema_alpha * sample_mean_prev + (1-ema_alpha) * sample_mean
-            self.sample_var_per_uid[uid_i] = ema_alpha * sample_var_prev + (1-ema_alpha) * sample_var
+                self.sample_mean_per_uid[uid_i] = ema_alpha * sample_mean_prev + (1-ema_alpha) * sample_mean
+                self.sample_var_per_uid[uid_i] = ema_alpha * sample_var_prev + (1-ema_alpha) * sample_var
 
         # Compute wins and win rates per uid.
         num = 8
@@ -814,7 +780,16 @@ class Validator:
             self.weights = (
                 alpha * self.weights + (1 - alpha) * new_weights
             )
+
+            # To prevent the weights from completely diverging from consensus, blend in the consensus weights.
+            consensus_alpha = 0.2
+            C_normalized = self.metagraph.C / self.metagraph.C.sum()
+            self.weights = (1-consensus_alpha) * self.weights + consensus_alpha * C_normalized
+
         self.weights = self.weights.nan_to_num(0.0)
+
+        # Update the queue with the current weights.
+        self.uids_queue.update_weights(self.weights.cpu().numpy())
 
         # Randomly sample a new set of uids from the list of models that we currently have.
         self.seeds_to_eval, uids_to_eval = self.uids_queue.take(16)
