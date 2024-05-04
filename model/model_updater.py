@@ -8,6 +8,7 @@ from model.model_tracker import ModelTracker
 from model.storage.local_model_store import LocalModelStore
 from model.storage.model_metadata_store import ModelMetadataStore
 from model.storage.remote_model_store import RemoteModelStore
+from model.utils import get_hash_of_two_strings
 
 
 class ModelUpdater:
@@ -89,9 +90,17 @@ class ModelUpdater:
 
             # Check that the hash of the downloaded content matches.
             if model.id.hash != metadata.id.hash:
-                raise ValueError(
-                    f"download_model for hotkey {hotkey} failed. Hash of content downloaded from hugging face does not match chain metadata. {metadata}"
-                )
+                # If the hash does not match directly, also try it with the hotkey of the miner.
+                # This is allowed to help miners prevent same-block copiers.
+                hash_with_hotkey = get_hash_of_two_strings(model.id.hash, hotkey)
+                if hash_with_hotkey != metadata.id.hash:
+                    bt.logging.trace(
+                        f"Sync for hotkey {hotkey} failed. Hash of content downloaded from hugging face {model.id.hash} "
+                        + f"or the hash including the hotkey {hash_with_hotkey} do not match chain metadata {metadata}."
+                    )
+                    raise ValueError(
+                        f"Sync for hotkey {hotkey} failed. Hash of content downloaded from hugging face does not match chain metadata. {metadata}"
+                    )
 
             self.model_tracker.model_downloaded.add(hotkey)
 

@@ -17,6 +17,8 @@ import constants
 from model.storage.hugging_face.hugging_face_model_store import HuggingFaceModelStore
 from model.model_updater import ModelUpdater
 import bittensor as bt
+
+from model.utils import get_hash_of_two_strings
 from utilities import utils
 from model.data import Model, ModelId
 from model.storage.chain.chain_model_metadata_store import ChainModelMetadataStore
@@ -57,6 +59,11 @@ def get_config():
     )
     parser.add_argument(
         "--list_competitions", action="store_true", help="Print out all competitions"
+    )
+    parser.add_argument(
+        "--use_hotkey_in_hash",
+        action="store_true",
+        help="If true, use the hotkey of the miner when generating the hash.",
     )
 
     # Include wallet and logging arguments from bittensor
@@ -107,6 +114,14 @@ async def main(config: bt.config):
         f"Model uploaded to Hugging Face with commit {model_id_with_commit.commit} and hash {model_id_with_commit.hash}"
     )
 
+    if config.use_hotkey_in_hash:
+        bt.logging.info(
+            f"Hashing miner hotkey {wallet.hotkey.ss58_address} into the hash before uploading."
+        )
+        new_hash = get_hash_of_two_strings(model_id_with_commit.hash, wallet.hotkey.ss58_address)
+        model_id_with_commit = model_id_with_commit.copy(update={"hash": new_hash})
+
+    bt.logging.success(f"Now committing to the chain with model_id: {model_id_with_commit}")
     model_metadata_store = ChainModelMetadataStore(
         subtensor=subtensor, wallet=wallet, subnet_uid=config.netuid
     )
