@@ -146,7 +146,11 @@ class ModelUpdater:
         model = await self.remote_store.download_model(metadata.id, path, parameters)
 
         # Check that the hash of the downloaded content matches.
-        if model.id.hash != metadata.id.hash:
+        hash_matches_directly = model.id.hash == metadata.id.hash
+        hash_with_hotkey = get_hash_of_two_strings(model.id.hash, hotkey)
+        hash_matches_with_hotkey = hash_with_hotkey == metadata.id.hash
+
+        if not (hash_matches_directly or hash_matches_with_hotkey):
             raise ValueError(
                 f"Sync for hotkey {hotkey} failed. Hash of content downloaded from hugging face does not match chain metadata. {metadata}"
             )

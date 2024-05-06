@@ -43,7 +43,7 @@ import multiprocessing
 from rich.table import Table
 from rich.console import Console
 
-from neurons.validator_utils import compute_wins, EvalQueue, adjust_for_vtrust
+from neurons.validator_utils import compute_wins, EvalQueue, adjust_for_vtrust, set_weights_with_err_msg
 from utilities.miner_iterator import MinerIterator
 from utilities import utils
 from utilities.perf_monitor import PerfMonitor
@@ -242,6 +242,7 @@ class Validator:
         self.sample_mean_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.sample_var_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.count_per_uid = np.zeros_like(self.weights, dtype=np.int64)
+        self.win_rate = np.zeros_like(self.weights)
 
         # Keep track of which block this uid last updated their model.
         # Default to an infinite block if we can't retrieve the metadata for the miner.
@@ -284,6 +285,7 @@ class Validator:
             competition_ids[uid] = constants.ORIGINAL_COMPETITION_ID
 
         self.weights.copy_(self.metagraph.C)
+        self.consensus = self.metagraph.C.cpu().numpy()
 
         for competition in constants.COMPETITION_SCHEDULE:
             bt.logging.trace(
@@ -387,6 +389,7 @@ class Validator:
     def update_models(self, update_delay_minutes):
         # Track how recently we updated each uid
         uid_last_checked = self.uid_last_checked
+        next_uid = None
 
         # The below loop iterates across all miner uids and checks to see
         # if they should be updated.
@@ -437,7 +440,7 @@ class Validator:
             except TimeoutError as e:
                 bt.logging.warning(f"Timeout trying to sync metagraph. This is normal when the chain is congested: {e}")
             except Exception as e:
-                bt.logging.error(f"Error in update loop: {e}")
+                bt.logging.error(f"Error in update loop while updating uid {next_uid}: {e}")
 
         bt.logging.info("Exiting update models loop.")
 
@@ -476,26 +479,54 @@ class Validator:
 
     async def try_set_weights(self, ttl: int):
         async def _try_set_weights():
-            try:
-                self.weights.nan_to_num(0.0)
-                adjusted_weights = adjust_for_vtrust(self.weights.cpu().numpy(), self.metagraph.C.cpu().numpy())
-                adjusted_weights = torch.tensor(adjusted_weights, device=self.config.device)
-                self.subtensor.set_weights(
-                    netuid=self.config.netuid,
-                    wallet=self.wallet,
-                    uids=self.metagraph.uids,
-                    weights=adjusted_weights,
-                    wait_for_inclusion=False,
-                    version_key=constants.weights_version_key,
-                )
-            except:
-                pass
+            consensus_np = self.consensus
+            while True:
+                try:
+                    self.weights.nan_to_num(0.0)
+                    adjusted_weights = adjust_for_vtrust(self.weights.cpu().numpy(), consensus_np)
+                    adjusted_weights = torch.tensor(adjusted_weights, dtype=torch.float32)
+                    success, message, exceptions = set_weights_with_err_msg(
+                        self.subtensor,
+                        netuid=self.config.netuid,
+                        wallet=self.wallet,
+                        uids=self.metagraph.uids,
+                        weights=adjusted_weights,
+                        wait_for_inclusion=True,
+                        version_key=constants.weights_version_key,
+                    )
+                    if success:
+                        bt.logging.success("Successfully set weights!")
+                        break
+                    else:
+                        bt.logging.error(f"Failed to set weights: {message}")
+                        for e in exceptions:
+                            bt.logging.error(f"Exception encountered during setting weights: {e}")
+                except Exception as e:
+                    bt.logging.error(f"Error calling set_weights: {e}")
+                    continue
+
+                bt.logging.info("Sleeping for 5 seconds before retrying...")
+                time.sleep(5.0)
+
             ws, ui = self.weights.topk(len(self.weights))
             table = Table(title="All Weights")
             table.add_column("uid", justify="right", style="cyan", no_wrap=True)
             table.add_column("weight", style="magenta")
+            table.add_column("adjusted weight", style="blue")
+            table.add_column("change")
+            table.add_column("consensus", style="green")
+
             for index, weight in list(zip(ui.tolist(), ws.tolist())):
-                table.add_row(str(index), str(round(weight, 4)))
+                adjusted_weight = float(adjusted_weights[index])
+                consensus = consensus_np[index]
+                change = adjusted_weight - weight
+                table.add_row(
+                    str(index),
+                    str(round(weight, 4)),
+                    "{:.4f}".format(adjusted_weight),
+                    "{:.2f}".format(change),
+                    "{:.4f}".format(consensus),
+                )
             console = Console()
             console.print(table)
 
@@ -506,7 +537,7 @@ class Validator:
         except asyncio.TimeoutError:
             bt.logging.error(f"Failed to set weights after {ttl} seconds")
 
-    async def try_sync_metagraph(self, ttl: int):
+    async def try_sync_metagraph(self, ttl: int) -> bool:
         def sync_metagraph(endpoint):
             # Update self.metagraph
             self.metagraph = bt.subtensor(endpoint).metagraph(self.config.netuid)
@@ -521,11 +552,13 @@ class Validator:
             process.terminate()
             process.join()
             bt.logging.error(f"Failed to sync metagraph after {ttl} seconds")
-            return
+            return False
 
         bt.logging.info("Synced metagraph")
         self.metagraph.load()
         self.miner_iterator.set_miner_uids(self.metagraph.uids.tolist())
+
+        return True
 
     async def try_run_step(self, ttl: int):
         async def _try_run_step():
@@ -551,7 +584,14 @@ class Validator:
         """
 
         # Update self.metagraph
-        await self.try_sync_metagraph(ttl=60)
+        synced_metagraph = await self.try_sync_metagraph(ttl=60)
+
+        # Update consensus.
+        self.consensus = self.metagraph.C.cpu().numpy()
+        if synced_metagraph:
+            bt.logging.info("metagraph sync success: {}".format(self.consensus))
+        else:
+            bt.logging.warning("metagraph sync failed: {}".format(self.consensus))
 
         competition_parameters = constants.COMPETITION_SCHEDULE[
             self.global_step % len(constants.COMPETITION_SCHEDULE)
@@ -669,7 +709,13 @@ class Validator:
                 ):
                     if self.uids_queue.epochs == 0:
                         # It is possible that we did not download a model. We should ensure that it is downloaded.
-                        asyncio.run(self.model_updater.ensure_model_downloaded(hotkey))
+                        try:
+                            asyncio.run(self.model_updater.ensure_model_downloaded(hotkey))
+                        except ValueError as e:
+                            # It is still possible that we are unable to download the model. We should skip it.
+                            bt.logging.error(f"Error downloading model for {uid_i}: {e}")
+                            scores_per_uid[uid_i] = scores
+                            continue
 
                     self.model_tracker.touch_miner_model(hotkey)
 
@@ -726,7 +772,7 @@ class Validator:
 
             scores_per_uid[uid_i] = scores
             if scores is not None:
-                bt.logging.debug(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
+                bt.logging.info(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
 
         # Update the first and second moments.
         # Use a exponential moving average to update the sample mean and variance.
@@ -747,15 +793,15 @@ class Validator:
         # Compute wins and win rates per uid.
         num = 8
         sample_mean_per_uid_corrected, sample_var_per_uid_corrected = self.sample_stats_corrected
-        win_rate = compute_wins(sample_mean_per_uid_corrected, sample_var_per_uid_corrected, self.block, num=num)
+        self.win_rate = compute_wins(sample_mean_per_uid_corrected, sample_var_per_uid_corrected, self.block, num=num)
 
         if self.uids_queue.epoch_is_done:
             # Make sure the winrate of any uids that we have never evaluated is zero, so we don't give validators
             # positive winrate.
-            win_rate[self.count_per_uid == 0] = 0
+            self.win_rate[self.count_per_uid == 0] = 0
 
         # Compute softmaxed weights based on win rate.
-        model_weights = torch.tensor(win_rate, dtype=torch.float32)
+        model_weights = torch.tensor(self.win_rate, dtype=torch.float32)
         new_weights = torch.softmax(model_weights / constants.temperature, dim=0)
 
         # Update weights based on moving average.
@@ -773,17 +819,22 @@ class Validator:
                     torch.zeros(new_weights.shape[0] - self.weights.shape[0]),
                 ]
             )
-        alpha = constants.alpha
+
+        lr = constants.lr
+        # Warmup at the beginning when the estimates are not yet reliable.
+        if self.uids_queue.epochs < 10:
+            lr = 0.1 * lr
 
         # Only update the weights once we have completed a full epoch, for each epoch.
         if self.uids_queue.epoch_is_done:
             self.weights = (
-                alpha * self.weights + (1 - alpha) * new_weights
+                (1 - lr) * self.weights + lr * new_weights
             )
 
-            # To prevent the weights from completely diverging from consensus, blend in the consensus weights.
+        # To prevent the weights from completely diverging from consensus, blend in the consensus weights.
+        if synced_metagraph:
             consensus_alpha = 0.2
-            C_normalized = self.metagraph.C / self.metagraph.C.sum()
+            C_normalized = torch.tensor(self.consensus / self.consensus.sum())
             self.weights = (1-consensus_alpha) * self.weights + consensus_alpha * C_normalized
 
         self.weights = self.weights.nan_to_num(0.0)
@@ -807,7 +858,7 @@ class Validator:
             self.log_step(
                 competition_parameters.competition_id,
                 uids,
-                win_rate,
+                self.win_rate,
                 scores_per_uid,
                 sample_per_uid,
                 load_model_perf.summary_str(),
@@ -881,9 +932,34 @@ class Validator:
         table = Table(title="Weights > 0.001")
         table.add_column("uid", justify="right", style="cyan", no_wrap=True)
         table.add_column("weight", style="magenta")
+        table.add_column("consensus", style="green")
+        table.add_column("winrate", style="magenta")
+        table.add_column("sample_mean corrected")
+        table.add_column("sample_mean")
+        table.add_column("sample_var corrected")
+        table.add_column("sample_var")
+
+        sample_mean_corrected, sample_var_corrected = self.sample_stats_corrected
         for index, weight in list(zip(ui.tolist(), ws.tolist())):
             if weight > 0.001:
-                table.add_row(str(index), str(round(weight, 4)))
+                consensus = self.consensus[index]
+                sample_mean = self.sample_mean_per_uid[index]
+                sample_var = self.sample_var_per_uid[index]
+                mean_corrected = sample_mean_corrected[index]
+                var_corrected = sample_var_corrected[index]
+                winrate = self.win_rate[index]
+
+                table.add_row(
+                    str(index),
+                    "{:.4f}".format(weight),
+                    "{:.4f}".format(consensus),
+                    "{:.1f}".format(winrate),
+                    "{:.4f}".format(mean_corrected),
+                    "{:.4f}".format(sample_mean),
+                    "{:.4f}".format(var_corrected),
+                    "{:.4f}".format(sample_var),
+                )
+
         console = Console()
         console.print(table)
 

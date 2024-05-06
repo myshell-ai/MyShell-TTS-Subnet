@@ -1,5 +1,9 @@
+from typing import Optional, Tuple, Union
+
 import bittensor as bt
 import numpy as np
+import torch
+from bittensor.extrinsics.set_weights import set_weights_extrinsic
 from scipy import optimize, stats
 from scipy.special import expit
 
@@ -78,7 +82,7 @@ def adjust_for_vtrust(weights: np.ndarray, consensus: np.ndarray, vtrust_min: fl
     # If the predicted vtrust is already above vtrust_min, then just return the current weights.
     orig_vtrust_loss = np.maximum(0.0, weights - consensus).sum()
     if orig_vtrust_loss <= vtrust_loss_desired:
-        bt.logging.info("Weights already satisfy vtrust_min. {} >= {}.", 1 - orig_vtrust_loss, vtrust_min)
+        bt.logging.info("Weights already satisfy vtrust_min. {} >= {}.".format(1 - orig_vtrust_loss, vtrust_min))
         return weights
 
     # If maximum vtrust allowable by the current consensus is less that vtrust_min, then choose the smallest lambda
@@ -105,7 +109,7 @@ def adjust_for_vtrust(weights: np.ndarray, consensus: np.ndarray, vtrust_min: fl
 
     new_weights = (1 - lam_opt) * weights + lam_opt * consensus_normalized
     vtrust_pred = np.minimum(weights, consensus).sum()
-    bt.logging.info("Interpolated weights to satisfy vtrust_min. {} -> {}.", 1 - orig_vtrust_loss, vtrust_pred)
+    bt.logging.info("Interpolated weights to satisfy vtrust_min. {} -> {}.".format(1 - orig_vtrust_loss, vtrust_pred))
     return new_weights
 
 
@@ -200,3 +204,52 @@ class EvalQueue:
             self.seed, self.queue = self._get_shuffled()
             self.epochs += 1
         return self.seed, self.queue.pop()
+
+
+def set_weights_with_err_msg(
+    self: bt.subtensor,
+    wallet: bt.wallet,
+    netuid: int,
+    uids: [torch.LongTensor, list],
+    weights: Union[torch.FloatTensor, list],
+    version_key: int = bt.__version_as_int__,
+    uid: Optional[int] = None,
+    wait_for_inclusion: bool = False,
+    wait_for_finalization: bool = False,
+    prompt: bool = False,
+    max_retries: int = 5,
+) -> Tuple[bool, str, list[Exception]]:
+    """Same as subtensor.set_weights, but with additional error messages."""
+    uid = self.get_uid_for_hotkey_on_subnet(wallet.hotkey.ss58_address, netuid)
+    retries = 0
+    success = False
+    message = "No attempt made. Perhaps it is too soon to set weights!"
+    exceptions = []
+
+    while (
+        self.blocks_since_last_update(netuid, uid) > self.weights_rate_limit(netuid)  # type: ignore
+        and retries < max_retries
+    ):
+        try:
+            success, message = set_weights_extrinsic(
+                subtensor=self,
+                wallet=wallet,
+                netuid=netuid,
+                uids=uids,
+                weights=weights,
+                version_key=version_key,
+                wait_for_inclusion=wait_for_inclusion,
+                wait_for_finalization=wait_for_finalization,
+                prompt=prompt,
+            )
+
+            if (wait_for_inclusion or wait_for_finalization) and success:
+                return success, message, exceptions
+
+        except Exception as e:
+            bt.logging.error(f"Error setting weights: {e}")
+            exceptions.append(e)
+        finally:
+            retries += 1
+
+    return success, message, exceptions
