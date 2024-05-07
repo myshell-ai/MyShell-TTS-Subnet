@@ -238,7 +238,7 @@ class Validator:
         self.global_step = 0
         self.last_epoch = self.metagraph.block.item()
 
-        self.ema_alpha = 0.8
+        self.ema_alpha = 0.01
         self.sample_mean_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.sample_var_per_uid = np.zeros_like(self.weights, dtype=np.float64)
         self.count_per_uid = np.zeros_like(self.weights, dtype=np.int64)
@@ -480,33 +480,21 @@ class Validator:
     async def try_set_weights(self, ttl: int):
         async def _try_set_weights():
             consensus_np = self.consensus
-            while True:
-                try:
-                    self.weights.nan_to_num(0.0)
-                    adjusted_weights = adjust_for_vtrust(self.weights.cpu().numpy(), consensus_np)
-                    adjusted_weights = torch.tensor(adjusted_weights, dtype=torch.float32)
-                    success, message, exceptions = set_weights_with_err_msg(
-                        self.subtensor,
-                        netuid=self.config.netuid,
-                        wallet=self.wallet,
-                        uids=self.metagraph.uids,
-                        weights=adjusted_weights,
-                        wait_for_inclusion=True,
-                        version_key=constants.weights_version_key,
-                    )
-                    if success:
-                        bt.logging.success("Successfully set weights!")
-                        break
-                    else:
-                        bt.logging.error(f"Failed to set weights: {message}")
-                        for e in exceptions:
-                            bt.logging.error(f"Exception encountered during setting weights: {e}")
-                except Exception as e:
-                    bt.logging.error(f"Error calling set_weights: {e}")
-                    continue
 
-                bt.logging.info("Sleeping for 5 seconds before retrying...")
-                time.sleep(5.0)
+            self.weights.nan_to_num(0.0)
+            adjusted_weights = adjust_for_vtrust(self.weights.cpu().numpy(), consensus_np)
+            adjusted_weights = torch.tensor(adjusted_weights, dtype=torch.float32)
+            success, message, exceptions = set_weights_with_err_msg(
+                self.subtensor,
+                netuid=self.config.netuid,
+                wallet=self.wallet,
+                uids=self.metagraph.uids,
+                weights=adjusted_weights,
+                wait_for_inclusion=False,
+                version_key=constants.weights_version_key,
+                max_retries=10
+            )
+            bt.logging.info("Set weights success: {}, message: {}".format(success, message))
 
             ws, ui = self.weights.topk(len(self.weights))
             table = Table(title="All Weights")

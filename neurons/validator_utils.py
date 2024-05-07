@@ -247,7 +247,7 @@ def set_weights_with_err_msg(
                 return success, message, exceptions
 
         except Exception as e:
-            bt.logging.error(f"Error setting weights: {e}")
+            bt.logging.exception(f"Error setting weights: {e}")
             exceptions.append(e)
         finally:
             retries += 1
