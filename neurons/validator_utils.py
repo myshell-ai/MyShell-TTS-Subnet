@@ -5,74 +5,65 @@ import numpy as np
 import torch
 from bittensor.extrinsics.set_weights import set_weights_extrinsic
 from scipy import optimize, stats
-from scipy.special import expit
+import typing
+import constants
 
-
-def get_p_win_sorted(m1, v1, n1, m2, v2, n2):
-    # Assume 1 is old, 2 is new.
-    vn1 = v1 / n1
-    vn2 = v2 / n2
-    with np.errstate(divide="ignore", invalid="ignore"):
-        df = (vn1 + vn2) ** 2 / (vn1**2 / (n1 - 1) + vn2**2 / (n2 - 1))
-
-    # If df is undefined, variances are zero (assumes n1 > 0 & n2 > 0).
-    # Hence it doesn't matter what df is as long as it's not NaN.
-    df = np.where(np.isnan(df), 1, df)
-    denom = np.sqrt(vn1 + vn2)
-
-    d = m1 - m2
-    with np.errstate(divide="ignore", invalid="ignore"):
-        t = np.divide(d, denom)[()]
-
-    t_dist = stats.distributions.t(df)
-    # This is the pvalue for m1 > m2. Smaller values better.
-    pvalue = t_dist.sf(t)
-    # Subtract to get the probability that m1 < m2.
-    p_win = 1 - pvalue
-
-    # Apply advantage to the older model.
-    p_win_adv = expit(50 * (p_win - 0.90))
-
-    # If both variances are zero due to getting the scores clipped then split it 50/50.
-    if np.isnan(p_win) or denom == 0.0:
-        p_win_adv = 0.5
-
-    return p_win_adv
-
-
-def get_p_win(m1, v1, n1, m2, v2, n2, block1, block2):
-    if block1 < block2:
-        # 1 is newer.
-        p_win_2 = get_p_win_sorted(m2, v2, n2, m1, v1, n1)
-        p_win_1 = 1 - p_win_2
-    else:
-        p_win_1 = get_p_win_sorted(m1, v1, n1, m2, v2, n2)
-
-    return p_win_1
-
-
-def compute_wins(sample_mean: np.ndarray, sample_var: np.ndarray, block: np.ndarray, num: int):
+def iswin(score_i, score_j, block_i, block_j):
     """
-    Computes the win rate for each model based on loss comparison.
+    Determines the winner between two models based on the epsilon adjusted score.
+
+    Parameters:
+        score_i (float): Score of uid i on batch
+        score_j (float): Score of uid j on batch.
+        block_i (int): Block of uid i.
+        block_j (int): Block of uid j.
+    Returns:
+        bool: True if score i is better, False otherwise.
     """
-    p_win = np.zeros_like(sample_mean)
+    # Adjust score based on timestamp and pretrain epsilon
+    score_i = (1 - constants.timestamp_epsilon) * score_i if block_i > block_j else score_i
+    score_j = (1 - constants.timestamp_epsilon) * score_j if block_j > block_i else score_j
+    return score_i > score_j
 
-    n_uids = len(sample_mean)
-    for uid_ii in range(n_uids):
-        mean_ii, var_ii, block_ii = sample_mean[uid_ii], sample_var[uid_ii], block[uid_ii]
+def compute_wins(
+    uids: typing.List[int],
+    scores_per_uid: typing.Dict[int, typing.List[float]],
+    block: np.ndarray,
+):
+    """
+    Computes the wins and win rate for each model based on score comparison.
 
-        for uid_jj in range(uid_ii + 1, n_uids):
-            mean_jj, var_jj, block_jj = sample_mean[uid_jj], sample_var[uid_jj], block[uid_jj]
+    Parameters:
+        uids (list): A list of uids to compare.
+        scores_per_uid (dict): A dictionary of scores for each uid by batch.
+        batches (List): A list of data batches.
+        uid_to_block (dict): A dictionary of blocks for each uid.
 
-            # Compute the win rate for each pair of uids.
-            p_win_ii = get_p_win(mean_ii, var_ii, num, mean_jj, var_jj, num, block_ii, block_jj)
-            p_win[uid_ii] += p_win_ii
-            p_win[uid_jj] += 1 - p_win_ii
+    Returns:
+        tuple: A tuple containing two dictionaries, one for wins and one for win rates.
+    """
+    wins = {uid: 0 for uid in uids}
+    win_rate = {uid: 0 for uid in uids}
+    for i, uid_i in enumerate(uids):
+        total_matches = 0
+        block_i = block[uid_i]
+        for j, uid_j in enumerate(uids):
+            if i == j:
+                continue
+            block_j = block[uid_j]
+            batches_i = len(scores_per_uid[uid_i])
+            batches_j = len(scores_per_uid[uid_j])
+            for batch_idx in range(0, min(batches_i, batches_j)):
+                scores_i = scores_per_uid[uid_i][batch_idx]
+                scores_j = scores_per_uid[uid_j][batch_idx]
+                wins[uid_i] += 1 if iswin(scores_i, scores_j, block_i, block_j) else 0
+                total_matches += 1
+        # Calculate win rate for uid i
+        win_rate[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
 
-    return p_win
+    return wins, win_rate
 
-
-def adjust_for_vtrust(weights: np.ndarray, consensus: np.ndarray, vtrust_min: float = 0.7):
+def adjust_for_vtrust(weights: np.ndarray, consensus: np.ndarray, vtrust_min: float = 0.5):
     """
     Interpolate between the current weight and the normalized consensus weights so that the
     vtrust does not fall below vturst_min, assuming the consensus does not change.

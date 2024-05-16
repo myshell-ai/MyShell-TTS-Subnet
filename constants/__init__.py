@@ -36,7 +36,8 @@ COMPETITION_SCHEDULE: List[CompetitionParameters] = [
     ),
 ]
 ORIGINAL_COMPETITION_ID = "p225"
-
+CONSTANT_ALPHA = 0.1 # prev: 0.2
+timestamp_epsilon = 0.01
 
 assert math.isclose(sum(x.reward_percentage for x in COMPETITION_SCHEDULE), 1.0)
 
@@ -47,6 +48,6 @@ assert math.isclose(sum(x.reward_percentage for x in COMPETITION_SCHEDULE), 1.0)
 weights_version_key = 4
 
 # validator weight moving average term. alpha = 1-lr.
-lr = 0.8
+lr = 0.2
 # validator scoring exponential temperature
-temperature = 6.0
+temperature = 0.08
