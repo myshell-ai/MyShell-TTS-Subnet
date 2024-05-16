@@ -236,9 +236,7 @@ def compute_mmd(a_x: torch.Tensor, b_y: torch.Tensor):
     return _SCALE * (k_xx + k_yy - 2 * k_xy)
 
 
-def compute_pann_mmd_loss(audio_paths: list[str], n_boostrap: int, rng: np.random.Generator = None):
-    if rng is None:
-        rng = np.random.default_rng()
+def compute_pann_mmd_loss(audio_paths: list[str]):
 
     n_samples = len(audio_paths)
     waveforms = [load_wav_file(fname, 32000) for fname in audio_paths]
@@ -251,9 +249,8 @@ def compute_pann_mmd_loss(audio_paths: list[str], n_boostrap: int, rng: np.rando
     embeddings = torch.stack(embeddings, dim=0)
 
     mmd_losses = []
-    for ii in range(n_boostrap):
-        idxs = rng.choice(n_samples, size=(n_samples,), replace=True)
-        sampled_embeddings = embeddings[idxs]
+    for idx in range(n_samples):
+        sampled_embeddings = embeddings[idx].unsqueeze(0)
         mmd = compute_mmd(speaker_pann_embeds, sampled_embeddings)
         mmd_losses.append(mmd.item())
 
@@ -300,10 +297,9 @@ def rate(
     seed=0,
     samples=64,
     batch_size=16,
-    n_bootstrap: int = 256,
     use_tmpdir=False,
 ):
-    return rate_(ckpt_path, speaker, seed, samples, batch_size, n_bootstrap, use_tmpdir)[0]
+    return rate_(ckpt_path, speaker, seed, samples, batch_size, use_tmpdir)[0]
 
 
 def rate_(
@@ -312,7 +308,6 @@ def rate_(
     seed=0,
     samples=64,
     batch_size=16,
-    n_bootstrap: int = 256,
     use_tmpdir=False,
 ):
     """
@@ -342,25 +337,22 @@ def rate_(
 
         audio_paths = sorted(glob.glob(os.path.join(tmpdir, "*.wav")))
 
-        pann_mmds = compute_pann_mmd_loss(audio_paths, n_bootstrap, rng=rng)
+        pann_mmds = compute_pann_mmd_loss(audio_paths)
         total_errs, total_words = compute_wer(text_test, audio_paths, batch_size)
         word_error_rates = []
-        for _ in range(n_bootstrap):
-            idxs = rng.choice(samples, (samples,), replace=True)
+        for idxs in range(samples):
             word_error_rates.append(total_errs[idxs].sum() / total_words[idxs].sum())
 
         vec_gt = vec_gt_dict[speaker]
         tcs = compute_tone_color_loss(audio_paths, vec_gt, batch_size)
-        idxs = rng.choice(samples, (n_bootstrap,), replace=True)
-        tcs = np.asarray(tcs)[idxs]
 
-    assert len(pann_mmds) == len(word_error_rates) == n_bootstrap
+    assert len(pann_mmds) == len(word_error_rates) == len(tcs) == samples
     raw_errs = {"pann_mmd": pann_mmds, "word_error_rate": word_error_rates, "tone_color": tcs}
     norm_dict = get_normalized_scores(raw_errs)
 
     keys = list(norm_dict.keys())
     norm_scores = []
-    for ii in range(n_bootstrap):
+    for ii in range(samples):
         norm_score = np.prod([norm_dict[k][ii] for k in keys])
         norm_scores.append(norm_score)
 

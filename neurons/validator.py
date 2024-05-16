@@ -294,7 +294,9 @@ class Validator:
             # Evaluate all models on the first iteration.
             consensus = [i for i, val in enumerate(list(self.metagraph.consensus)) if competition_ids[i] == competition.competition_id]
             self.uids_queue = EvalQueue(self.weights.cpu().numpy())
-            self.seeds_to_eval, uids_to_eval = self.uids_queue.take(16)
+            self.seeds_to_eval, uids_to_eval = self.uids_queue.take(32)
+            bt.logging.debug(f"Seeds to eval: {self.seeds_to_eval}")
+            bt.logging.debug(f"Uids to eval: {uids_to_eval}")
             self.uids_to_eval[competition.competition_id] = uids_to_eval
 
             consensus_map = {uid: self.weights[uid].item() for uid in consensus}
@@ -303,11 +305,11 @@ class Validator:
             )
 
             # Sync the first few models, we can sync the rest while running.
-            bt.logging.info("Syncing models for the first 16 hotkeys. This may take a while...")
-            uids_to_sync = list(uids_to_eval)[:16]
+            bt.logging.info("Syncing models for the first 32 hotkeys. This may take a while...")
+            uids_to_sync = list(uids_to_eval)[:32]
             hotkeys = [self.metagraph.hotkeys[uid] for uid in uids_to_sync]
             results = asyncio.run(self.model_updater.sync_models(hotkeys))
-            bt.logging.info("Syncing models for the first 16 hotkeys. This may take a while... Done!")
+            bt.logging.info("Syncing models for the first 32 hotkeys. This may take a while... Done!")
 
             for uid in uids_to_sync:
                 self.uid_last_checked[uid] = dt.datetime.now()
@@ -688,7 +690,7 @@ class Validator:
             hotkey,
             model_i_metadata,
         )) in enumerate(pbar):
-            scores = None
+            scores: typing.List[float] = []
 
             if model_i_metadata is not None:
                 if (
@@ -726,7 +728,6 @@ class Validator:
                                     competition_parameters.competition_id,
                                     seed,
                                     samples=n_samples,
-                                    n_bootstrap=256,
                                     batch_size=batch_size,
                                 )
 
@@ -758,70 +759,71 @@ class Validator:
                 else:
                     bt.logging.warning(f"Unable to load model for {uid_i}")
 
+            if len(scores) == 0:
+                scores = [0.0] * n_samples
+            
             scores_per_uid[uid_i] = scores
-            if scores is not None:
+            
+            if sum(scores) > 0.:
                 bt.logging.info(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
+        
+        wins, win_rate = compute_wins(uids, scores_per_uid, self.block)
 
-        # Update the first and second moments.
-        # Use a exponential moving average to update the sample mean and variance.
-        ema_alpha = self.ema_alpha
-        for uid_i in uids:
-            sample_mean_prev, sample_var_prev = self.sample_mean_per_uid[uid_i], self.sample_var_per_uid[uid_i]
-            scores = scores_per_uid[uid_i]
+        # Update the win rate for the current step.
+        if hasattr(self, "temp_win_rate"):
+            if self.temp_win_rate == None:
+                self.temp_win_rate = {}
+        else:
+            self.temp_win_rate = {}
 
-            if scores is not None:
-                self.count_per_uid[uid_i] += 1
+        for i, uid_i in enumerate(win_rate.keys()):
+            self.temp_win_rate[uid_i] = win_rate[uid_i]
 
-                sample_mean = np.mean(scores)
-                sample_var = np.var(scores, ddof=1)
-
-                self.sample_mean_per_uid[uid_i] = ema_alpha * sample_mean_prev + (1-ema_alpha) * sample_mean
-                self.sample_var_per_uid[uid_i] = ema_alpha * sample_var_prev + (1-ema_alpha) * sample_var
-
-        # Compute wins and win rates per uid.
-        num = 8
-        sample_mean_per_uid_corrected, sample_var_per_uid_corrected = self.sample_stats_corrected
-        self.win_rate = compute_wins(sample_mean_per_uid_corrected, sample_var_per_uid_corrected, self.block, num=num)
-
-        if self.uids_queue.epoch_is_done:
-            # Make sure the winrate of any uids that we have never evaluated is zero, so we don't give validators
-            # positive winrate.
-            self.win_rate[self.count_per_uid == 0] = 0
-
-        # Compute softmaxed weights based on win rate.
-        model_weights = torch.tensor(self.win_rate, dtype=torch.float32)
-        new_weights = torch.softmax(model_weights / constants.temperature, dim=0)
-
-        # Update weights based on moving average.
-        scale = (
-            len(constants.COMPETITION_SCHEDULE)
-            * competition_parameters.reward_percentage
-        )
-        new_weights *= scale / new_weights.sum()
-        if new_weights.shape[0] < self.weights.shape[0]:
-            self.weights = self.weights[: new_weights.shape[0]]
-        elif new_weights.shape[0] > self.weights.shape[0]:
-            self.weights = torch.cat(
-                [
-                    self.weights,
-                    torch.zeros(new_weights.shape[0] - self.weights.shape[0]),
-                ]
-            )
-
+        
         lr = constants.lr
         # Warmup at the beginning when the estimates are not yet reliable.
         if self.uids_queue.epochs < 10:
-            lr = 0.1 * lr
+            lr = 0.5 * lr
 
         # Only update the weights once we have completed a full epoch, for each epoch.
+        bt.logging.debug(f"Epoch is done: {self.uids_queue.queue}")
         if self.uids_queue.epoch_is_done:
+            model_weights = torch.tensor(
+                [self.temp_win_rate[uid] for uid in self.temp_win_rate.keys()], dtype=torch.float32
+            )
+            step_weights = torch.softmax(model_weights / constants.temperature, dim=0)
+
+            new_weights = torch.zeros_like(self.weights)
+
+            for i, uid_i in enumerate(self.temp_win_rate.keys()):
+                new_weights[uid_i] = step_weights[i]
+
+            scale = (
+                len(constants.COMPETITION_SCHEDULE)
+                * competition_parameters.reward_percentage
+            )
+            new_weights *= scale / new_weights.sum()
+
+            if new_weights.shape[0] < self.weights.shape[0]:
+                self.weights = self.weights[: new_weights.shape[0]]
+            elif new_weights.shape[0] > self.weights.shape[0]:
+                self.weights = torch.cat(
+                    [
+                        self.weights,
+                        torch.zeros(new_weights.shape[0] - self.weights.shape[0]),
+                    ]
+                )
+            bt.logging.debug(f'new weights: {new_weights}')
+            bt.logging.debug(f'self weights: {self.weights}')
+            bt.logging.debug(f'consensus: {self.consensus}')
+            bt.logging.debug(f'win_rate: {self.temp_win_rate}')
+            self.temp_win_rate = {}
             self.weights = (
                 (1 - lr) * self.weights + lr * new_weights
             )
-
         # To prevent the weights from completely diverging from consensus, blend in the consensus weights.
         if synced_metagraph:
-            consensus_alpha = 0.2
+            consensus_alpha = constants.CONSTANT_ALPHA
             C_normalized = torch.tensor(self.consensus / self.consensus.sum())
             self.weights = (1-consensus_alpha) * self.weights + consensus_alpha * C_normalized
 
@@ -831,7 +833,9 @@ class Validator:
         self.uids_queue.update_weights(self.weights.cpu().numpy())
 
         # Randomly sample a new set of uids from the list of models that we currently have.
-        self.seeds_to_eval, uids_to_eval = self.uids_queue.take(16)
+        self.seeds_to_eval, uids_to_eval = self.uids_queue.take(32)
+        bt.logging.debug(f"Seeds to eval: {self.seeds_to_eval}")
+        bt.logging.debug(f"Uids to eval: {uids_to_eval}")
         self.uids_to_eval[competition_parameters.competition_id] = uids_to_eval
 
         # Log the performance of the eval loop.
@@ -846,7 +850,7 @@ class Validator:
             self.log_step(
                 competition_parameters.competition_id,
                 uids,
-                self.win_rate,
+                win_rate,
                 scores_per_uid,
                 sample_per_uid,
                 load_model_perf.summary_str(),
