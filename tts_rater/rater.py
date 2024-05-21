@@ -236,7 +236,7 @@ def compute_mmd(a_x: torch.Tensor, b_y: torch.Tensor):
     return _SCALE * (k_xx + k_yy - 2 * k_xy)
 
 
-def compute_pann_mmd_loss(audio_paths: list[str]):
+def compute_pann_mmd_loss(audio_paths: list[str], speaker: str = "p374"):
 
     n_samples = len(audio_paths)
     waveforms = [load_wav_file(fname, 32000) for fname in audio_paths]
@@ -251,7 +251,7 @@ def compute_pann_mmd_loss(audio_paths: list[str]):
     mmd_losses = []
     for idx in range(n_samples):
         sampled_embeddings = embeddings[idx].unsqueeze(0)
-        mmd = compute_mmd(speaker_pann_embeds, sampled_embeddings)
+        mmd = compute_mmd(speaker_pann_embeds[speaker], sampled_embeddings)
         mmd_losses.append(mmd.item())
 
     return mmd_losses
@@ -293,7 +293,7 @@ def compute_sharpe_ratios(scores: list[float]) -> list[float]:
 
 def rate(
     ckpt_path,
-    speaker="p225",
+    speaker="p374",
     seed=0,
     samples=64,
     batch_size=16,
@@ -304,7 +304,7 @@ def rate(
 
 def rate_(
     ckpt_path,
-    speaker="p225",
+    speaker="p374",
     seed=0,
     samples=64,
     batch_size=16,
@@ -337,7 +337,7 @@ def rate_(
 
         audio_paths = sorted(glob.glob(os.path.join(tmpdir, "*.wav")))
 
-        pann_mmds = compute_pann_mmd_loss(audio_paths)
+        pann_mmds = compute_pann_mmd_loss(audio_paths, speaker)
         total_errs, total_words = compute_wer(text_test, audio_paths, batch_size)
         word_error_rates = []
         for idxs in range(samples):
@@ -365,7 +365,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ckpt_path", type=str, required=True)
     parser.add_argument("--use_tmpdir", action="store_true")
-    parser.add_argument("--speaker", type=str, default="p225")
+    parser.add_argument("--speaker", type=str, default="p374")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--samples", type=int, default=64)
     parser.add_argument("--n_bootstrap", type=int, default=256)
