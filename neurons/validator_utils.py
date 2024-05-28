@@ -42,12 +42,37 @@ def compute_wins(
     Returns:
         tuple: A tuple containing two dictionaries, one for wins and one for win rates.
     """
+    blacklist_uids = []
+    for i, uid_i in enumerate(uids):
+        block_i = block[uid_i]
+        # if scores are all 0
+        if uid_i in blacklist_uids:
+            continue
+        if all([score == 0 for score in scores_per_uid[uid_i]]):
+            blacklist_uids.append(uid_i)
+            continue
+        for j, uid_j in enumerate(uids):
+            if i == j or uid_j in blacklist_uids:
+                continue
+            block_j = block[uid_j]
+            # check if scores are similar...
+            # currently we are chilling to put tolerance to 1e-1
+            # if the scores are similar, we will blacklist the model with the higher block number
+            if abs(np.asarray(scores_per_uid[uid_i]) - np.asarray(scores_per_uid[uid_j])).max() < 1e-1:
+                if block_i < block_j:
+                    blacklist_uids.append(uid_j)
+                else:
+                    if block_i > block_j: # miners should use --use_hotkey_in_hash to avoid the same block clones
+                        blacklist_uids.append(uid_i)
+                        break
+    whitelist_uids = [uid for uid in uids if uid not in blacklist_uids]
+
     wins = {uid: 0 for uid in uids}
     win_rate = {uid: 0 for uid in uids}
-    for i, uid_i in enumerate(uids):
+    for i, uid_i in enumerate(whitelist_uids):
         total_matches = 0
         block_i = block[uid_i]
-        for j, uid_j in enumerate(uids):
+        for j, uid_j in enumerate(whitelist_uids):
             if i == j:
                 continue
             block_j = block[uid_j]
