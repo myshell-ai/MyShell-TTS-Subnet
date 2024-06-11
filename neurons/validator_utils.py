@@ -68,7 +68,7 @@ def compute_wins(
     whitelist_uids = [uid for uid in uids if uid not in blacklist_uids]
 
     wins = {uid: 0 for uid in uids}
-    win_rate = {uid: 0 for uid in uids}
+    win_rate_1 = {uid: 0 for uid in uids}
     for i, uid_i in enumerate(whitelist_uids):
         total_matches = 0
         block_i = block[uid_i]
@@ -84,8 +84,48 @@ def compute_wins(
                 wins[uid_i] += 1 if iswin(scores_i, scores_j, block_i, block_j) else 0
                 total_matches += 1
         # Calculate win rate for uid i
-        win_rate[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
+        win_rate_1[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
 
+    win_rate_4 = {uid: 0 for uid in uids}
+    for i, uid_i in enumerate(whitelist_uids):
+        total_matches = 0
+        block_i = block[uid_i]
+        for j, uid_j in enumerate(whitelist_uids):
+            if i == j:
+                continue
+            block_j = block[uid_j]
+            batches_i = len(scores_per_uid[uid_i])//4
+            batches_j = len(scores_per_uid[uid_j])//4
+            for batch_idx in range(0, min(batches_i, batches_j)):
+                scores_is = scores_per_uid[uid_i][batch_idx * 4: (batch_idx + 1) * 4]
+                scores_js = scores_per_uid[uid_j][batch_idx * 4: (batch_idx + 1) * 4]
+                wins[uid_i] += 1 if iswin(np.mean(scores_is), np.mean(scores_js), block_i, block_j) else 0
+                total_matches += 1
+        # Calculate win rate for uid i
+        win_rate_4[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
+
+    win_rate_8 = {uid: 0 for uid in uids}
+    for i, uid_i in enumerate(whitelist_uids):
+        total_matches = 0
+        block_i = block[uid_i]
+        for j, uid_j in enumerate(whitelist_uids):
+            if i == j:
+                continue
+            block_j = block[uid_j]
+            batches_i = len(scores_per_uid[uid_i])//8
+            batches_j = len(scores_per_uid[uid_j])//8
+            temp_scores_i = scores_per_uid[uid_i][1::2] + scores_per_uid[uid_i][::2]
+            temp_scores_j = scores_per_uid[uid_j][1::2] + scores_per_uid[uid_j][::2]
+            temp_scores_i.reverse()
+            temp_scores_j.reverse()
+            for batch_idx in range(0, min(batches_i, batches_j)):
+                scores_is = temp_scores_i[batch_idx * 8: (batch_idx + 1) * 8]
+                scores_js = temp_scores_j[batch_idx * 8: (batch_idx + 1) * 8]
+                wins[uid_i] += 1 if iswin(np.mean(scores_is), np.mean(scores_js), block_i, block_j) else 0
+                total_matches += 1
+        # Calculate win rate for uid i
+        win_rate_8[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
+    win_rate = {uid: (win_rate_1[uid] * 0.25 + win_rate_4[uid] * 0.25 + win_rate_8[uid] * 0.5) for uid in uids}
     return wins, win_rate
 
 def adjust_for_vtrust(weights: np.ndarray, consensus: np.ndarray, vtrust_min: float = 0.5):
