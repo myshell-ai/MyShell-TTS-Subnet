@@ -2,6 +2,7 @@ from whisper.normalizers import EnglishTextNormalizer
 
 from tts_rater.models import ReferenceEncoder
 import torch
+import torch.nn.functional as F
 from tts_rater.mel_processing import spectrogram_torch
 import librosa
 import os
@@ -19,8 +20,8 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 from tqdm import tqdm
 import onnxruntime as ort
 import tempfile
-
 from tts_rater.pann import PANNModel
+from tts_rater.rawnet.inference import AntiSpoofingInference
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -247,15 +248,49 @@ def compute_pann_mmd_loss(audio_paths: list[str], speaker: str = "p374"):
         embedding = pann_model.get_embedding(audio[None])[0]
         embeddings.append(embedding)
     embeddings = torch.stack(embeddings, dim=0)
+    embeddings_reverse = embeddings.flip(0)
+    embeddings_cat = torch.cat([embeddings, embeddings_reverse], dim=1).reshape(-1, embeddings.shape[-1])
 
     mmd_losses = []
     for idx in range(n_samples):
-        sampled_embeddings = embeddings[idx].unsqueeze(0)
+        sampled_embeddings = embeddings_cat[idx: idx + 16]
         mmd = compute_mmd(speaker_pann_embeds[speaker], sampled_embeddings)
         mmd_losses.append(mmd.item())
 
     return mmd_losses
 
+# =================== Anti Spoofing loss ===================
+speaker_antispoofing_embeds = torch.load(os.path.join(script_dir, "rawnet/antispoofing_embeds.pth"), map_location="cuda")
+antispoofing_model = AntiSpoofingInference()
+
+def quick_pad(audio, n_samples = 48000):
+    if len(audio) < n_samples:
+        audio = torch.cat([audio, torch.zeros(n_samples - len(audio))])
+    return audio
+
+def random_crop(audio, n_samples = 48000):
+    if len(audio) > n_samples:
+        start = torch.randint(0, len(audio) - n_samples, (1,)).item()
+        audio = audio[start:start+n_samples]
+    return audio
+
+def compute_antispoofing_loss(audio_paths: list[str], batch_size: int = 16, speaker: str = "p374"):
+    audios = []
+    for f in audio_paths:
+        audio = load_wav_file(f, 16000)
+        audio = quick_pad(audio)
+        audio = random_crop(audio)
+        audios.append(audio)
+    embeddings = []
+    for audio in tqdm(batched(audios, batch_size), total=math.ceil(len(audios) / batch_size)):
+        embeddings.append(antispoofing_model.get_embedding(torch.stack(audio).cuda()))
+    embeddings = torch.cat(embeddings, dim=0)
+    embeddings = F.normalize(embeddings, p=2, dim=1)
+
+    distance = torch.cdist(
+        embeddings, speaker_antispoofing_embeds[speaker]
+    )
+    return distance.min(dim=1).values.cpu().tolist()
 
 # =================== Rate function ===================
 
@@ -264,7 +299,7 @@ texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 
 
 def get_normalized_scores(raw_errs: dict[str, float]):
-    score_ranges = {"pann_mmd": (0.0, 200.0), "word_error_rate": (0.0, 0.08), "tone_color": (0.15, 0.4)}
+    score_ranges = {"pann_mmd": (20.0, 200.0), "word_error_rate": (0.0, 0.08), "tone_color": (0.15, 0.4), "antispoofing": (0.5, 1.2)}
     normalized_scores = {}
     for key, value in raw_errs.items():
         min_val, max_val = score_ranges[key]
@@ -346,14 +381,16 @@ def rate_(
         vec_gt = vec_gt_dict[speaker]
         tcs = compute_tone_color_loss(audio_paths, vec_gt, batch_size)
 
-    assert len(pann_mmds) == len(word_error_rates) == len(tcs) == samples
-    raw_errs = {"pann_mmd": pann_mmds, "word_error_rate": word_error_rates, "tone_color": tcs}
+        antispoofing_losses = compute_antispoofing_loss(audio_paths, batch_size, speaker)
+
+    assert len(pann_mmds) == len(word_error_rates) == len(tcs) == len(antispoofing_losses) == samples
+    raw_errs = {"pann_mmd": pann_mmds, "word_error_rate": word_error_rates, "tone_color": tcs, "antispoofing": antispoofing_losses}
     norm_dict = get_normalized_scores(raw_errs)
 
     keys = list(norm_dict.keys())
     norm_scores = []
     for ii in range(samples):
-        norm_score = np.prod([norm_dict[k][ii] for k in keys])
+        norm_score = np.sum([norm_dict[k][ii] for k in keys])
         norm_scores.append(norm_score)
 
     return norm_scores, norm_dict
