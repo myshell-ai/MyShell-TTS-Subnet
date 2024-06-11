@@ -31,4 +31,5 @@ class AntiSpoofingInference:
         self.model.to(self.device)
     
     def get_embedding(self, x):
-        return self.model(x)
+        with torch.inference_mode():
+            return self.model(x)
