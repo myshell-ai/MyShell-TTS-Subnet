@@ -767,7 +767,7 @@ class Validator:
             if sum(scores) > 0.:
                 bt.logging.info(f"Computed model scores for uid {uid_i}. Mean: {np.array(scores).mean()}")
         
-        wins, win_rate = compute_wins(uids, scores_per_uid, self.block)
+        win_rate = compute_wins(uids, scores_per_uid, self.block)
 
         # Update the win rate for the current step.
         if hasattr(self, "temp_win_rate"):
