@@ -55,10 +55,18 @@ def compute_wins(
             if i == j or uid_j in blacklist_uids:
                 continue
             block_j = block[uid_j]
+
+            scores_i = np.asarray(scores_per_uid[uid_i])
+            scores_j = np.asarray(scores_per_uid[uid_j])
+
+            epsilon = 1e-6
+            relative_diff = np.abs(scores_i - scores_j) / (epsilon + np.maximum(np.abs(scores_i), np.abs(scores_j)))
+
             # check if scores are similar...
-            # currently we are chilling to put tolerance to 1e-1
+            # The models are similar if the relative change is smaller than 10%.
             # if the scores are similar, we will blacklist the model with the higher block number
-            if abs(np.asarray(scores_per_uid[uid_i]) - np.asarray(scores_per_uid[uid_j])).max() < 1e-1:
+            relative_change_threshold = 0.1
+            if relative_diff.max() < relative_change_threshold:
                 if block_i < block_j:
                     blacklist_uids.append(uid_j)
                 else:
