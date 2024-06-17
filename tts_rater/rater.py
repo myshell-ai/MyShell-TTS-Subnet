@@ -299,7 +299,8 @@ texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 
 
 def get_normalized_scores(raw_errs: dict[str, float]):
-    score_ranges = {"pann_mmd": (20.0, 200.0), "word_error_rate": (0.0, 0.08), "tone_color": (0.15, 0.4), "antispoofing": (0.5, 1.2)}
+    # we adjust the normalization range to encourage miner improve the antispoofing score
+    score_ranges = {"pann_mmd": (50.0, 200.0), "word_error_rate": (0.0, 0.08), "tone_color": (0.15, 0.4), "antispoofing": (0.6, 1.5)}
     normalized_scores = {}
     for key, value in raw_errs.items():
         min_val, max_val = score_ranges[key]

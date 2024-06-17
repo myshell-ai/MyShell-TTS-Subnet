@@ -56,9 +56,8 @@ def compute_wins(
                 continue
             block_j = block[uid_j]
             # check if scores are similar...
-            # currently we are chilling to put tolerance to 1e-1
             # if the scores are similar, we will blacklist the model with the higher block number
-            if abs(np.asarray(scores_per_uid[uid_i]) - np.asarray(scores_per_uid[uid_j])).max() < 1e-1:
+            if abs(np.asarray(scores_per_uid[uid_i]) - np.asarray(scores_per_uid[uid_j])).max() < 5e-2:
                 if block_i < block_j:
                     blacklist_uids.append(uid_j)
                 else:
@@ -85,7 +84,7 @@ def compute_wins(
                 total_matches += 1
         # Calculate win rate for uid i
         win_rate_1[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
-
+    wins = {uid: 0 for uid in uids}
     win_rate_4 = {uid: 0 for uid in uids}
     for i, uid_i in enumerate(whitelist_uids):
         total_matches = 0
@@ -103,7 +102,7 @@ def compute_wins(
                 total_matches += 1
         # Calculate win rate for uid i
         win_rate_4[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
-
+    wins = {uid: 0 for uid in uids}
     win_rate_8 = {uid: 0 for uid in uids}
     for i, uid_i in enumerate(whitelist_uids):
         total_matches = 0
@@ -125,7 +124,7 @@ def compute_wins(
                 total_matches += 1
         # Calculate win rate for uid i
         win_rate_8[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
-    win_rate = {uid: (win_rate_1[uid] * 0.25 + win_rate_4[uid] * 0.25 + win_rate_8[uid] * 0.5) for uid in uids}
+    win_rate = {uid: (win_rate_1[uid] * 0.25 + win_rate_4[uid] * 0.5 + win_rate_8[uid]) for uid in uids}
     return wins, win_rate
 
 def adjust_for_vtrust(weights: np.ndarray, consensus: np.ndarray, vtrust_min: float = 0.5):
