@@ -125,10 +125,10 @@ def compute_wins(
         # Calculate win rate for uid i
         win_rate_8[uid_i] = wins[uid_i] / total_matches if total_matches > 0 else 0
 
-    weights = {win_rate_1: 0.25, win_rate_4: 0.5, win_rate_8: 1.0}
-    weights_sum = sum(weights.values())
-    weights = {winrate_dict: weight / weights_sum for winrate_dict, weight in weights.items()}
-    win_rate = {uid: sum([win_rate_dict[uid] * weight for win_rate_dict, weight in weights.items()]) for uid in uids}
+    weights = [(win_rate_1, 0.25), (win_rate_4, 0.5), (win_rate_8, 1.0)]
+    weights_sum = sum([w for _, w in weights])
+    weights = [(winrate_dict, weight / weights_sum) for winrate_dict, weight in weights]
+    win_rate = {uid: sum([win_rate_dict[uid] * weight for win_rate_dict, weight in weights]) for uid in uids}
     return wins, win_rate
 
 def adjust_for_vtrust(weights: np.ndarray, consensus: np.ndarray, vtrust_min: float = 0.5):
