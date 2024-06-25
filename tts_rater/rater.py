@@ -299,7 +299,7 @@ model_name = 'myshell-test/judge_239'
 model_path = model_name.replace('/', '_')
 temp_location = hf_hub_download(repo_id=model_name, repo_type='model', filename='checkpoint.pth', local_dir=model_path)
 rd_checkpoint = torch.load(
-    os.path.join(script_dir, "judge_239.pth"), map_location="cuda"
+    temp_location, map_location="cuda"
 )
 rater_judger.load_state_dict(rd_checkpoint["model"], strict=True)
 rater_judger.eval()
