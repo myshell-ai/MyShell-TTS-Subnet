@@ -1,9 +1,9 @@
 from whisper.normalizers import EnglishTextNormalizer
 
-from tts_rater.models import ReferenceEncoder
+from tts_rater.models import ReferenceEncoder, RaterJudger
 import torch
 import torch.nn.functional as F
-from tts_rater.mel_processing import spectrogram_torch
+from tts_rater.mel_processing import spectrogram_torch, mel_spectrogram_torch
 import librosa
 import os
 import eng_to_ipa as ipa
@@ -20,8 +20,9 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 from tqdm import tqdm
 import onnxruntime as ort
 import tempfile
-from tts_rater.pann import PANNModel
+# from tts_rater.pann import PANNModel
 from tts_rater.rawnet.inference import AntiSpoofingInference
+from huggingface_hub import hf_hub_download
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -215,49 +216,49 @@ def compute_dns_mos_loss(audio_paths, batch_size):
 
 
 # =================== PANN MMD loss ===================
-speaker_pann_embeds = torch.load(os.path.join(script_dir, "pann/pann_embeds.pth"), map_location="cuda")
-pann_model = PANNModel()
+# speaker_pann_embeds = torch.load(os.path.join(script_dir, "pann/pann_embeds.pth"), map_location="cuda")
+# pann_model = PANNModel()
 
-def compute_mmd(a_x: torch.Tensor, b_y: torch.Tensor):
-    _SIGMA = 10
-    _SCALE = 1000
+# def compute_mmd(a_x: torch.Tensor, b_y: torch.Tensor):
+#     _SIGMA = 10
+#     _SCALE = 1000
 
-    a_x = a_x.double()
-    b_y = b_y.double()
+#     a_x = a_x.double()
+#     b_y = b_y.double()
 
-    a_x_sqnorms = torch.sum(a_x**2, dim=1)
-    b_y_sqnorms = torch.sum(b_y**2, dim=1)
+#     a_x_sqnorms = torch.sum(a_x**2, dim=1)
+#     b_y_sqnorms = torch.sum(b_y**2, dim=1)
 
-    gamma = 1 / (2 * _SIGMA**2)
+#     gamma = 1 / (2 * _SIGMA**2)
 
-    k_xx = torch.mean(torch.exp(-gamma * (-2 * (a_x @ a_x.T) + a_x_sqnorms[:, None] + a_x_sqnorms[None, :])))
-    k_xy = torch.mean(torch.exp(-gamma * (-2 * (a_x @ b_y.T) + a_x_sqnorms[:, None] + b_y_sqnorms[None, :])))
-    k_yy = torch.mean(torch.exp(-gamma * (-2 * (b_y @ b_y.T) + b_y_sqnorms[:, None] + b_y_sqnorms[None, :])))
+#     k_xx = torch.mean(torch.exp(-gamma * (-2 * (a_x @ a_x.T) + a_x_sqnorms[:, None] + a_x_sqnorms[None, :])))
+#     k_xy = torch.mean(torch.exp(-gamma * (-2 * (a_x @ b_y.T) + a_x_sqnorms[:, None] + b_y_sqnorms[None, :])))
+#     k_yy = torch.mean(torch.exp(-gamma * (-2 * (b_y @ b_y.T) + b_y_sqnorms[:, None] + b_y_sqnorms[None, :])))
 
-    return _SCALE * (k_xx + k_yy - 2 * k_xy)
+#     return _SCALE * (k_xx + k_yy - 2 * k_xy)
 
 
-def compute_pann_mmd_loss(audio_paths: list[str], speaker: str = "p374"):
+# def compute_pann_mmd_loss(audio_paths: list[str], speaker: str = "p374"):
 
-    n_samples = len(audio_paths)
-    waveforms = [load_wav_file(fname, 32000) for fname in audio_paths]
+#     n_samples = len(audio_paths)
+#     waveforms = [load_wav_file(fname, 32000) for fname in audio_paths]
 
-    embeddings = []
-    for audio in tqdm(waveforms):
-        audio = torch.Tensor(audio).cuda()
-        embedding = pann_model.get_embedding(audio[None])[0]
-        embeddings.append(embedding)
-    embeddings = torch.stack(embeddings, dim=0)
-    embeddings_reverse = embeddings.flip(0)
-    embeddings_cat = torch.cat([embeddings, embeddings_reverse], dim=1).reshape(-1, embeddings.shape[-1])
+#     embeddings = []
+#     for audio in tqdm(waveforms):
+#         audio = torch.Tensor(audio).cuda()
+#         embedding = pann_model.get_embedding(audio[None])[0]
+#         embeddings.append(embedding)
+#     embeddings = torch.stack(embeddings, dim=0)
+#     embeddings_reverse = embeddings.flip(0)
+#     embeddings_cat = torch.cat([embeddings, embeddings_reverse], dim=1).reshape(-1, embeddings.shape[-1])
 
-    mmd_losses = []
-    for idx in range(n_samples):
-        sampled_embeddings = embeddings_cat[idx: idx + 16]
-        mmd = compute_mmd(speaker_pann_embeds[speaker], sampled_embeddings)
-        mmd_losses.append(mmd.item())
+#     mmd_losses = []
+#     for idx in range(n_samples):
+#         sampled_embeddings = embeddings_cat[idx: idx + 16]
+#         mmd = compute_mmd(speaker_pann_embeds[speaker], sampled_embeddings)
+#         mmd_losses.append(mmd.item())
 
-    return mmd_losses
+#     return mmd_losses
 
 # =================== Anti Spoofing loss ===================
 speaker_antispoofing_embeds = torch.load(os.path.join(script_dir, "rawnet/antispoofing_embeds.pth"), map_location="cuda")
@@ -292,6 +293,49 @@ def compute_antispoofing_loss(audio_paths: list[str], batch_size: int = 16, spea
     )
     return distance.min(dim=1).values.cpu().tolist()
 
+# =================== RaterJudger ==============
+rater_judger= RaterJudger().cuda()
+model_name = 'myshell-test/judge_239'
+model_path = model_name.replace('/', '_')
+temp_location = hf_hub_download(repo_id=model_name, repo_type='model', filename='checkpoint.pth', local_dir=model_path)
+rd_checkpoint = torch.load(
+    os.path.join(script_dir, "judge_239.pth"), map_location="cuda"
+)
+rater_judger.load_state_dict(rd_checkpoint["model"], strict=True)
+rater_judger.eval()
+def compute_judger_loss(audio_paths):
+    # waveforms = [load_wav_file(fname, hps.data.sampling_rate) for fname in audio_paths]
+    waveforms = []
+    for f in audio_paths:
+        audio = load_wav_file(f, 44100)
+        audio = quick_pad(audio, 16384)
+        audio = random_crop(audio, 16384)
+        waveforms.append(audio)
+    batch_size = 16
+
+    gs = []
+
+    for y in tqdm(
+        batched(waveforms, batch_size), total=math.ceil(len(waveforms) / batch_size)
+    ):
+        with torch.inference_mode():
+            y = torch.stack(y)
+            y = y.to(next(rater_judger.parameters()).device)
+            y_hat_mel = mel_spectrogram_torch(
+                y.squeeze(1),
+                2048,
+                128,
+                44100,
+                512,
+                2048,
+                0,
+                None,
+            )
+            g = rater_judger(y_hat_mel)
+            gs.append(g.detach())
+    gs = torch.cat(gs)
+    return gs.squeeze_(1).tolist()
+
 # =================== Rate function ===================
 
 # TODO: Read texts from Internet or use a larger dataset
@@ -300,7 +344,13 @@ texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 
 def get_normalized_scores(raw_errs: dict[str, float]):
     # we adjust the normalization range to encourage miner improve the antispoofing score
-    score_ranges = {"pann_mmd": (50.0, 200.0), "word_error_rate": (0.0, 0.08), "tone_color": (0.15, 0.4), "antispoofing": (0.6, 1.5)}
+    score_ranges = {
+        # "pann_mmd": (50.0, 200.0), 
+        "word_error_rate": (0.04, 0.12), # a more challenging dataset
+        "tone_color": (0.15, 0.4), 
+        "antispoofing": (0.6, 1.5), 
+        "judge_scores": (-0.00236, -0.00244)
+        }
     normalized_scores = {}
     for key, value in raw_errs.items():
         min_val, max_val = score_ranges[key]
@@ -309,22 +359,22 @@ def get_normalized_scores(raw_errs: dict[str, float]):
     return normalized_scores
 
 
-def compute_sharpe_ratios(scores: list[float]) -> list[float]:
-    # Jackknife estimate of the Sharpe ratio.
-    n = len(scores)
-    sharpe_ratios = []
-    for ii in range(n):
-        scores_jack = scores[:ii] + scores[ii + 1 :]
-        mean_jack = np.mean(scores_jack)
-        std_jack = np.std(scores_jack, ddof=1)
-        sharpe_jack = mean_jack / std_jack
+# def compute_sharpe_ratios(scores: list[float]) -> list[float]:
+#     # Jackknife estimate of the Sharpe ratio.
+#     n = len(scores)
+#     sharpe_ratios = []
+#     for ii in range(n):
+#         scores_jack = scores[:ii] + scores[ii + 1 :]
+#         mean_jack = np.mean(scores_jack)
+#         std_jack = np.std(scores_jack, ddof=1)
+#         sharpe_jack = mean_jack / std_jack
 
-        if mean_jack < 1e-6 and std_jack == 0.0:
-            sharpe_jack = 0.0
+#         if mean_jack < 1e-6 and std_jack == 0.0:
+#             sharpe_jack = 0.0
 
-        sharpe_ratios.append(sharpe_jack)
+#         sharpe_ratios.append(sharpe_jack)
 
-    return sharpe_ratios
+#     return sharpe_ratios
 
 
 def rate(
@@ -372,8 +422,11 @@ def rate_(
             model.tts_to_file(text, spkr, save_path, speed=1.0, quiet=True)
 
         audio_paths = sorted(glob.glob(os.path.join(tmpdir, "*.wav")))
+        
+        judge_scores = compute_judger_loss(audio_paths)
+        
 
-        pann_mmds = compute_pann_mmd_loss(audio_paths, speaker)
+        # pann_mmds = compute_pann_mmd_loss(audio_paths, speaker)
         total_errs, total_words = compute_wer(text_test, audio_paths, batch_size)
         word_error_rates = []
         for idxs in range(samples):
@@ -384,8 +437,15 @@ def rate_(
 
         antispoofing_losses = compute_antispoofing_loss(audio_paths, batch_size, speaker)
 
-    assert len(pann_mmds) == len(word_error_rates) == len(tcs) == len(antispoofing_losses) == samples
-    raw_errs = {"pann_mmd": pann_mmds, "word_error_rate": word_error_rates, "tone_color": tcs, "antispoofing": antispoofing_losses}
+    # assert len(pann_mmds) == len(word_error_rates) == len(tcs) == len(antispoofing_losses) == samples == len(disc_scores)
+    assert len(word_error_rates) == len(tcs) == len(antispoofing_losses) == samples == len(judge_scores)
+    raw_errs = {
+                # "pann_mmd": pann_mmds, 
+                "word_error_rate": word_error_rates, 
+                "tone_color": tcs, 
+                "antispoofing": antispoofing_losses,
+                "judge_scores": judge_scores,
+                }
     norm_dict = get_normalized_scores(raw_errs)
 
     keys = list(norm_dict.keys())

@@ -73,3 +73,44 @@ class ReferenceEncoder(nn.Module):
         for i in range(n_convs):
             L = (L - kernel_size + 2 * pad) // stride + 1
         return L
+
+class StackingSubsampling(nn.Module):
+    def __init__(self, stride, feat_in, feat_out):
+        super().__init__()
+        self.stride = stride
+        self.out = nn.Linear(stride * feat_in, feat_out)
+
+    def forward(
+        self, features: torch.Tensor, features_length: torch.Tensor
+    ) -> torch.Tensor:
+        b, t, d = features.size()
+        pad_size = (self.stride - (t % self.stride)) % self.stride
+        features = nn.functional.pad(features, (0, 0, 0, pad_size))
+        _, t, _ = features.size()
+        features = torch.reshape(features, (b, t // self.stride, d * self.stride))
+        out_features = self.out(features)
+        out_length = torch.div(
+            features_length + pad_size, self.stride, rounding_mode="floor"
+        )
+        return out_features, out_length
+
+class RaterJudger(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.subsampling = StackingSubsampling(3, 128, 128)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=128, nhead=8)
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer=encoder_layer,
+            num_layers=8
+        )
+        self.linear = nn.Linear(128, 1)
+        print("ssl: ", sum(p.numel() for p in self.subsampling.parameters())) 
+        print("conf",sum(p.numel() for p in self.transformer.parameters()))
+        print("lin", sum(p.numel() for p in self.linear.parameters()))
+
+    def forward(self, x):
+        bsz, _, lens = x.size()
+        leng = torch.tensor([lens for _ in range(bsz)]).to(x.device)
+        x, leng = self.subsampling(x.transpose(1, 2), leng)
+        x = self.transformer(x)
+        return self.linear(x.mean(dim=1))
