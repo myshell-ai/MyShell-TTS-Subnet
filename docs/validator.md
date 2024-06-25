@@ -51,9 +51,9 @@ It is important to note that this affects the game theoretics of the incentive l
 
 # System Requirements
 
-Validators will need enough disk space to store the model of every miner in the subnet. Each model is limited to 512 MB, and the validator has cleanup logic to remove old models. It is recommended to have at least 256 GB of disk space.
+Validators will need enough disk space to store the model of every miner in the subnet. Each model is limited to 512 MB, and the validator has cleanup logic to remove old models. It is recommended to have at least 512 GB of disk space.
 
-Validators will need enough processing power to evaluate their model. Thanks to the efficiency of MeloTTS, the validator can be run on a CPU machine. We are working on a GPU version of the validator to speed up the evaluation process.
+Validators will need enough processing power to evaluate their model. We recommend GPU machines with at least A6000, while other 24G GPUs like 3090 and 4090 also work. If you face "cuFFT error", please refer to [this](https://github.com/myshell-ai/OpenVoice/issues/41).
 
 # Getting Started
 
