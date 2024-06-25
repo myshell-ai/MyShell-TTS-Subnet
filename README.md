@@ -7,6 +7,8 @@
 ---
 *News: We are now on the mainnet with uid 3! Please join the [Bittensor Discord](https://discord.gg/RXST8svz) and see us at Channel γ·gamma·3! Also, please check our [X (Twitter)](https://twitter.com/myshell_ai/status/1772792027148894557) for our vision of creating a collaborative environment where everyone can contribute, benefit, and engage with open-source models, ultimately empowering millions.  03/24*
 
+*Update: We are now in Phase 2 of the subnet. Our goal is to provide a more diversified and exciting voice dataset for miners to train and develop state-of-the-art efficient TTS models. We have observed that miners are making significant improvements in current metrics, which is encouraging. However, we need to be cautious about potential overfitting to these metrics. Our development team is working diligently on an adversarial and highly complex research study to develop an automatic system to address this issue. Have fun! 06/23*
+
 ## Introduction
 
 > **Note:** The following documentation assumes you are familiar with basic Bittensor concepts: Miners, Validators, and incentives. If you need a primer, please check out https://docs.bittensor.com/learn/bittensor-building-blocks.
@@ -23,9 +25,11 @@ As building a TTS model is a complex task, we will divide the development into s
 - **Phase 3**: More generally, we can have fast-clone models that can be adapted to new speakers with a small amount of data, e.g., [OpenVoice](https://github.com/myshell-ai/OpenVoice). We will move to fast-clone models in this phase.
 
 ## Current Status
-We are currently in Phase 1. To start, we utilize the [VCTK](https://huggingface.co/datasets/vctk) dataset as the source of our speaker data. We randomly select 1 speaker from the dataset and the goal is to build a TTS model that can mimic this speaker's voice.
+We are currently in Phase 2. To start, we utilize the [AniSpeech](https://huggingface.co/datasets/ShoukanLabs/AniSpeech) dataset as the source of our speaker data. We randomly select 1 speaker from the dataset and the goal is to build a TTS model that can perfectly mimic this speaker's voice.
 
 Please refer to `tts_rater` folder for audio samples from the speaker and the text used for evaluation.
+
+Please refer to `preprocess` folder for options to download and preprocess the dataset for training.
 
 ## Overview
 ![architecture](docs/tts_subnet.png)
