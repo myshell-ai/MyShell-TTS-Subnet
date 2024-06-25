@@ -32,10 +32,10 @@ MAX_HUGGING_FACE_BYTES: int = 512 * 1024 * 1024
 COMPETITION_SCHEDULE: List[CompetitionParameters] = [
     CompetitionParameters(
         reward_percentage=1.0,
-        competition_id="p334",
+        competition_id="p239",
     ),
 ]
-ORIGINAL_COMPETITION_ID = "p334"
+ORIGINAL_COMPETITION_ID = "p239"
 CONSTANT_ALPHA = 0.1 # prev: 0.2
 timestamp_epsilon = 0.005
 
