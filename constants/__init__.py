@@ -32,12 +32,12 @@ MAX_HUGGING_FACE_BYTES: int = 512 * 1024 * 1024
 COMPETITION_SCHEDULE: List[CompetitionParameters] = [
     CompetitionParameters(
         reward_percentage=1.0,
-        competition_id="p239",
+        competition_id="p241",
     ),
 ]
-ORIGINAL_COMPETITION_ID = "p239"
+ORIGINAL_COMPETITION_ID = "p241"
 CONSTANT_ALPHA = 0.1 # prev: 0.2
-timestamp_epsilon = 0.005
+timestamp_epsilon = 0.01 # enhance vtrust
 
 assert math.isclose(sum(x.reward_percentage for x in COMPETITION_SCHEDULE), 1.0)
 

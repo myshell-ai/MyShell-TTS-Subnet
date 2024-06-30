@@ -295,7 +295,7 @@ def compute_antispoofing_loss(audio_paths: list[str], batch_size: int = 16, spea
 
 # =================== RaterJudger ==============
 rater_judger= RaterJudger().cuda()
-model_name = 'myshell-test/judge_239'
+model_name = 'myshell-test/judge'
 model_path = model_name.replace('/', '_')
 temp_location = hf_hub_download(repo_id=model_name, repo_type='model', filename='checkpoint.pth', local_dir=model_path)
 rd_checkpoint = torch.load(
