@@ -177,42 +177,42 @@ def compute_wer(texts, audio_paths, batch_size):
     return np.array(total_errs), np.array(total_words)
 
 
-# =================== DNS-MOS loss ===================
-"""Adapted from https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS"""
+# # =================== DNS-MOS loss ===================
+# """Adapted from https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS"""
 
-INPUT_LENGTH = 9
+# INPUT_LENGTH = 9
 
-# Only use p808_onnx_sess for now
-# primary_model = ort.InferenceSession(os.path.join(script_dir, "DNSMOS/sig_bak_ovr.onnx"))
-p808_onnx_sess = ort.InferenceSession(os.path.join(script_dir, "DNSMOS/model_v8.onnx"))
-
-
-def load_melspecs(fname):
-    audio_ref, sr = librosa.load(fname, sr=16000)
-    len_samples = int(INPUT_LENGTH * sr)
-    # Repeat or truncate the audio to the desired length
-    if len(audio_ref) < len_samples:
-        audio_ref = np.tile(audio_ref, 1 + int(np.ceil(len_samples / len(audio_ref))))
-    audio_ref = audio_ref[:len_samples]
-    mel_spec = librosa.feature.melspectrogram(
-        y=audio_ref, sr=16000, n_fft=321, hop_length=160, n_mels=120
-    )
-    # to_db
-    mel_spec = (librosa.power_to_db(mel_spec, ref=np.max) + 40) / 40
-    return mel_spec
+# # Only use p808_onnx_sess for now
+# # primary_model = ort.InferenceSession(os.path.join(script_dir, "DNSMOS/sig_bak_ovr.onnx"))
+# p808_onnx_sess = ort.InferenceSession(os.path.join(script_dir, "DNSMOS/model_v8.onnx"))
 
 
-def compute_dns_mos_loss(audio_paths, batch_size):
-    mel_specs = [np.array(load_melspecs(f).T).astype("float32") for f in audio_paths]
-    dns_mos_results = []
-    for mel_batch in tqdm(
-        batched(mel_specs, batch_size), total=math.ceil(len(mel_specs) / batch_size)
-    ):
-        p808_oi = {"input_1": np.stack(mel_batch)}
-        outputs = p808_onnx_sess.run(None, p808_oi)
-        dns_mos_results.extend(outputs[0].reshape(-1).tolist())
-    # convert to loss
-    return [-x for x in dns_mos_results]
+# def load_melspecs(fname):
+#     audio_ref, sr = librosa.load(fname, sr=16000)
+#     len_samples = int(INPUT_LENGTH * sr)
+#     # Repeat or truncate the audio to the desired length
+#     if len(audio_ref) < len_samples:
+#         audio_ref = np.tile(audio_ref, 1 + int(np.ceil(len_samples / len(audio_ref))))
+#     audio_ref = audio_ref[:len_samples]
+#     mel_spec = librosa.feature.melspectrogram(
+#         y=audio_ref, sr=16000, n_fft=321, hop_length=160, n_mels=120
+#     )
+#     # to_db
+#     mel_spec = (librosa.power_to_db(mel_spec, ref=np.max) + 40) / 40
+#     return mel_spec
+
+
+# def compute_dns_mos_loss(audio_paths, batch_size):
+#     mel_specs = [np.array(load_melspecs(f).T).astype("float32") for f in audio_paths]
+#     dns_mos_results = []
+#     for mel_batch in tqdm(
+#         batched(mel_specs, batch_size), total=math.ceil(len(mel_specs) / batch_size)
+#     ):
+#         p808_oi = {"input_1": np.stack(mel_batch)}
+#         outputs = p808_onnx_sess.run(None, p808_oi)
+#         dns_mos_results.extend(outputs[0].reshape(-1).tolist())
+#     # convert to loss
+#     return [-x for x in dns_mos_results]
 
 
 # =================== Anti Spoofing loss ===================
@@ -252,7 +252,7 @@ def compute_antispoofing_loss(audio_paths: list[str], batch_size: int = 16, spea
 rater_judger= RaterJudger().cuda()
 model_name = 'myshell-test/judge'
 model_path = model_name.replace('/', '_')
-temp_location = hf_hub_download(repo_id=model_name, repo_type='model', filename='checkpoint.pth', local_dir=model_path)
+temp_location = hf_hub_download(repo_id=model_name, repo_type='model', filename='checkpoint.pth', local_dir=model_path, force_download=True)
 rd_checkpoint = torch.load(
     temp_location, map_location="cuda"
 )
@@ -300,7 +300,6 @@ texts = json.load(open(os.path.join(script_dir, "text_list.json")))
 def get_normalized_scores(raw_errs: dict[str, float]):
     # we adjust the normalization range to encourage miner improve the antispoofing score
     score_ranges = {
-        # "pann_mmd": (50.0, 200.0), 
         "word_error_rate": (0.04, 0.12), # a more challenging dataset
         "tone_color": (0.15, 0.4), 
         "antispoofing": (0.6, 1.5), 
@@ -334,7 +333,9 @@ def rate_(
 ):
     """
     Compute the following metrics for a given checkpoint:
-    - PANN MMD
+    - Judge scores
+    - Anti-spoofing scores
+    - Tone color scores
     - Word error rate
     Then normalize the scores to (nominally) [0, 1] range.
     """
