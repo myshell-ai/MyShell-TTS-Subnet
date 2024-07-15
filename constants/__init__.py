@@ -36,8 +36,8 @@ COMPETITION_SCHEDULE: List[CompetitionParameters] = [
     ),
 ]
 ORIGINAL_COMPETITION_ID = "p247"
-CONSTANT_ALPHA = 0.2 # prev: 0.2
-timestamp_epsilon = 0.02 # enhance vtrust
+CONSTANT_ALPHA = 0.1 # prev: 0.2
+timestamp_epsilon = 0.01 # enhance vtrust
 
 assert math.isclose(sum(x.reward_percentage for x in COMPETITION_SCHEDULE), 1.0)
 
