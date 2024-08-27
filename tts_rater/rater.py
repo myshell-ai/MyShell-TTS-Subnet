@@ -303,7 +303,7 @@ def get_normalized_scores(raw_errs: dict[str, float]):
         "word_error_rate": (0.04, 0.12), # a more challenging dataset
         "tone_color": (0.15, 0.4), 
         "antispoofing": (0.6, 1.5), 
-        "judge_scores": (-0.00215, -0.0022) # (-0.00236, -0.00244)
+        "judge_scores": (-0.00225, -0.0023) # (-0.00236, -0.00244)
         }
     normalized_scores = {}
     for key, value in raw_errs.items():
